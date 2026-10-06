@@ -100,6 +100,14 @@ The `proxy-router` sidecar fetches immediately and refreshes every minute. If
 the public API is temporarily unavailable, it keeps the last generated GOST
 configuration and retries on the next interval.
 
+The overlay needs no bootstrap file. `proxy-router` writes an API-only GOST
+config using the `api-username` and `api-password` from the Secret, so `gost`
+starts even while the public API is unreachable and opens the proxy listeners on
+the first successful sync. The Pod can take up to 30 minutes to become ready
+in that case (the `gost` startup probe). Its reload requests must use the same
+API credentials GOST starts with, which is why the file is generated from the
+Secret instead of copied from a fixed one.
+
 The optional `k8s/overlays/gost-router` overlay runs two containers in each
 gost-router Pod:
 
