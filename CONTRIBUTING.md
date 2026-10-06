@@ -29,8 +29,9 @@ manifests. To try the service locally, follow the Quick start in the
 
 - Keep a change focused, and include tests. Tests must be hermetic: no network,
   no real cluster, no credentials.
-- Update documentation and [docs/redis-schema.md](docs/redis-schema.md) when you
-  change behavior, configuration, or the stored schema.
+- Update documentation when you change behavior, configuration, or the stored
+  schema: [docs/configuration.md](docs/configuration.md) for config keys and
+  [docs/redis-schema.md](docs/redis-schema.md) for Redis keys.
 - Run `make check` before pushing. Match the style of the surrounding code.
 - Write commit messages that explain *why*. Squash-merge is used, so the PR
   title and description become the commit message.
