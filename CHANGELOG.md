@@ -8,7 +8,8 @@ All notable changes are recorded here. The format follows
 ### Added
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in
   `docs/deployment.md` for creating the namespace-scoped CI deployer identity
-  behind the `KUBE_CONFIG_B64` secret.
+  behind the `KUBE_CONFIG_B64` secret, and `scripts/ci-kubeconfig.sh`, an
+  admin-run script that automates it with the Terraform-managed kubeconfig.
 
 ## [0.1.0] - 2026-10-06
 
