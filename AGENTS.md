@@ -15,7 +15,7 @@ Rules for anyone, human or automated, changing this repository.
 
 ## Security and responsible use
 
-- Never commit credentials, tokens, kubeconfigs, Terraform state or variable
+- Never commit credentials, tokens, kubeconfigs, infrastructure state or variable
   files, `.env` files, or GeoIP databases. `.gitignore` and `.dockerignore`
   already exclude the usual ones; do not weaken them.
 - Proxy feeds are untrusted input. Validate before storing or echoing; never
@@ -24,9 +24,9 @@ Rules for anyone, human or automated, changing this repository.
   permission to use. Do not add defaults that point at third-party services,
   and keep request budgets conservative. See
   [docs/responsible-use.md](docs/responsible-use.md).
-- Agents must not run `scripts/ci-kubeconfig.sh`, `scripts/refresh-kubeconfig.sh`,
-  or anything else that uses an admin kubeconfig or writes cluster or CI
-  credentials. A maintainer runs those by hand.
+- Agents must not run `scripts/ci-kubeconfig.sh` or anything else that uses an
+  admin kubeconfig or writes cluster or CI credentials. A maintainer runs those
+  by hand.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), not in a
   public issue.
 

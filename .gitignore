@@ -5,19 +5,14 @@
 __pycache__/
 coverage.out
 dist/
-# Terraform: track *.tf, README, terraform.tfvars.example, and
-# .terraform.lock.hcl; ignore only generated state, plugins, and credentials.
-terraform/.terraform/
+# Infrastructure code (Terraform, cluster provisioning) is kept out of this
+# repository. Never commit state, variable files, or kubeconfigs.
+terraform/
 *.tfstate
 *.tfstate.*
-terraform/terraform.tfvars
-terraform/*.auto.tfvars
-terraform/kubeconfig*.yaml
-terraform/crash.log
-terraform/crash.*.log
-terraform/*.tfplan
-terraform/override.tf
-terraform/*_override.tf
+*.tfvars
+kubeconfig*.yaml
+*.kubeconfig
 # Local Compose runtime state, credentials, and GeoIP databases.
 runtime/
 secrets/

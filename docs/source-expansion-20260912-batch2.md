@@ -96,6 +96,6 @@ Evidence and rollback snapshots: `/tmp/freeproxyapi-source-expansion-batch2/`.
 To roll back this batch's source configuration:
 
 ```sh
-kubectl --kubeconfig terraform/kubeconfig.yaml -n freeproxyapi patch configmap freeproxyapi-config --type merge --patch-file /tmp/freeproxyapi-source-expansion-batch2/rollback-patch.json
-kubectl --kubeconfig terraform/kubeconfig.yaml -n freeproxyapi rollout restart deployment/freeproxyapi
+kubectl --kubeconfig <admin-kubeconfig> -n freeproxyapi patch configmap freeproxyapi-config --type merge --patch-file /tmp/freeproxyapi-source-expansion-batch2/rollback-patch.json
+kubectl --kubeconfig <admin-kubeconfig> -n freeproxyapi rollout restart deployment/freeproxyapi
 ```
