@@ -85,6 +85,31 @@ spec:
             summary: "Internal proxy API is returning 503 for failed queries"
             description: "{{ $value }} internal API queries failed in the last 15m. gost-router cannot refresh its upstreams while this persists. Check monitor pod logs for 'internal proxy query failed' lines and Redis health."
 
+        - alert: RelayAuditPublicAPIQueryFailures
+          # /proxies and /stats answer 503 only when a query fails and no
+          # earlier response can be served, so a few during a rollout are
+          # expected. Sustained failures mean visitors and gost-router are
+          # seeing errors.
+          expr: sum(increase(freeproxyapi_public_query_failures_total[15m])) > 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Public /proxies or /stats is returning 503"
+            description: "{{ $value }} public requests failed in the last 15m with no cached response to fall back on. Check Redis latency, monitor CPU throttling, and freeproxyapi_redis_pool_timeouts_total."
+
+        - alert: RelayAuditPublicAPIRefreshFailing
+          # Expired public responses are refreshed in the background. While the
+          # refresh fails, clients are served data up to five minutes old
+          # instead of an error, which hides the problem unless it is alerted.
+          expr: sum(increase(freeproxyapi_public_refresh_failures_total[15m])) > 10
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Public /proxies refreshes are failing; serving older data"
+            description: "{{ $value }} background refreshes failed in the last 15m. Responses are being served stale for up to five minutes. Check Redis latency and monitor CPU throttling."
+
         - alert: RelayAuditHTTPSPassRateCollapsed
           expr: |
             (

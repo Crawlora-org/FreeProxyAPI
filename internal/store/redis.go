@@ -1842,7 +1842,37 @@ type QueryProxy struct {
 	TamperCheckedAt int64 `json:"tamper_checked_at_ms,omitempty"`
 }
 
-const queryScanBatch = 128
+const (
+	// queryScanBatch is the read size for a small page, which is cheap when a
+	// query ends after a few matches.
+	queryScanBatch = 128
+	// queryPipelineBatch is the read size once a query may need many records,
+	// matching queryValidatedIDs's pipeline size.
+	queryPipelineBatch = 500
+	// queryScanCount is the SSCAN COUNT hint. A query that finds fewer matches
+	// than its limit reads the whole validated set, and every SSCAN call and
+	// pipeline is a Redis round trip, so ask for many members at a time. On the
+	// hosted service (about 800 validated members) this took a full scan from
+	// about 14 round trips to 3.
+	queryScanCount = 1024
+)
+
+// queryReadSize returns how many scanned IDs to read in one pipeline. Without a
+// filter every ID that is read is returned, so read only what is still needed.
+// A filter can reject records, so read a full page, larger when the limit says
+// many records are wanted.
+func queryReadSize(f ProxyFilter, needed int) int {
+	if hasProxyFilter(f) {
+		if f.Limit > queryScanBatch {
+			return queryPipelineBatch
+		}
+		return queryScanBatch
+	}
+	if needed > queryPipelineBatch {
+		return queryPipelineBatch
+	}
+	return needed
+}
 
 // QueryValidated returns validated candidates matching the filter. Positive
 // limits use bounded SSCAN pages so a small response does not materialize or
@@ -1872,15 +1902,12 @@ func (s *Redis) QueryValidated(ctx context.Context, f ProxyFilter) ([]QueryProxy
 	returned := make(map[string]struct{}, initialCapacity)
 	var cursor uint64
 	for {
-		ids, next, err := s.client.SScan(ctx, s.validatedKey(), cursor, "", queryScanBatch).Result()
+		ids, next, err := s.client.SScan(ctx, s.validatedKey(), cursor, "", queryScanCount).Result()
 		if err != nil {
 			return nil, err
 		}
 		for start := 0; start < len(ids) && len(out) < limit; {
-			readSize := limit - len(out)
-			if hasProxyFilter(f) || readSize > queryScanBatch {
-				readSize = queryScanBatch
-			}
+			readSize := queryReadSize(f, limit-len(out))
 			end := start + readSize
 			if end > len(ids) {
 				end = len(ids)
@@ -1922,7 +1949,7 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 	if out == nil {
 		out = make([]QueryProxy, 0)
 	}
-	const batch = 500
+	const batch = queryPipelineBatch
 	nowMs := time.Now().UnixMilli()
 	var okCutoffMs int64
 	if f.MaxAgeMs > 0 {

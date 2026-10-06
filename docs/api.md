@@ -88,14 +88,27 @@ best-effort because the validated pool changes between requests.
 | --- | --- |
 | `400` | A filter or paging value is invalid. |
 | `429` | Per-IP rate limit exceeded. Wait `Retry-After` seconds. |
-| `503` | Redis query failed, or too many distinct uncached queries are running; retry after `Retry-After`. Cached responses keep being served. |
+| `503` | The query failed (it has up to about 9 seconds), or too many distinct uncached queries are running. Retry after `Retry-After` (5 seconds). Only a query that was not served recently can fail this way; see [Stale responses](#stale-responses). |
+
+### Stale responses
+
+A response is cached for 30 seconds. After that, the first request for the same
+query is answered at once from the previous response while one background
+refresh replaces it, and a refresh that fails does not turn the query into an
+error. Such a response is up to five minutes past its normal 30 seconds. It is
+sent with `Cache-Control: public, max-age=5, s-maxage=5` and
+`Warning: 110 - "Response is Stale"`, so clients and CDNs ask again within
+seconds. A query that has not been served in the last five minutes is loaded
+before it is answered, and that load is the only case that returns `503`.
+`/stats` behaves the same way.
 
 ## `GET /stats`
 
 Aggregate counts, never proxy URLs: `total`, `stable`, `by_country`,
 `stable_by_country`, `by_anonymity`, and `latency_bands` (`<200ms`,
 `200-500ms`, `500-1000ms`, `>1000ms`, `unknown`), plus `checked_at`. Cached for
-30 seconds. `GET /stats?echo=1` returns the same body as `/get`.
+30 seconds, with the same [stale responses](#stale-responses) as `/proxies`.
+`GET /stats?echo=1` returns the same body as `/get`.
 
 ## `GET /get`
 

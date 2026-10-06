@@ -26,6 +26,25 @@ All notable changes are recorded here. The format follows
   nothing. New `privacy_url` option adds a small "Privacy" link to the pages.
 
 ### Fixed
+- `/proxies` returned `503 {"error":"query failed"}` on cache misses that scan
+  the whole validated set, such as the `limit=1000` query `proxy-router` makes
+  when fewer proxies match than requested. On the hosted service that scan took
+  about 14 Redis round trips and, on a slow Redis, exceeded the handler's 3
+  second budget; failed loads were not cached, so every retry paid again.
+  - The scan now uses larger `SSCAN` pages and pipelines: 3 round trips for
+    about 800 members.
+  - Loads get their own 8 second budget instead of the 3 second readiness
+    probe's, and the request waits for it.
+  - `/proxies` and `/stats` answer an expired entry from the previous response
+    (up to five minutes old) while one background refresh replaces it, so a
+    slow or failing Redis no longer turns a recently served query into an
+    error. Stale responses carry a short `Cache-Control` and a `Warning: 110`
+    header, and `503` responses now send `Retry-After: 5`.
+  - New metrics `freeproxyapi_public_query_failures_total`,
+    `freeproxyapi_public_stale_responses_total` and
+    `freeproxyapi_public_refresh_failures_total`, and alerts
+    `RelayAuditPublicAPIQueryFailures` and `RelayAuditPublicAPIRefreshFailing`.
+    Public 503s were not counted anywhere before, so nothing alerted on them.
 - `k8s/overlays/gost-public-sidecar` copied a bootstrap config with fixed
   `bootstrap`/`bootstrap` API credentials, while `proxy-router` reloaded GOST
   with the credentials from the `gost-public-auth` Secret, so every reload

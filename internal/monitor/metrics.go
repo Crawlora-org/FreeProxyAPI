@@ -67,26 +67,29 @@ type targetProbeMetrics struct {
 // outcomes, and global-budget denials. Target-labeled probe metrics expose only
 // the configured scheme, host, and path (never query strings or credentials).
 type Metrics struct {
-	sourceRefreshTotal   [4]atomic.Int64 // ok, error, skipped, canceled
-	sourceFailures       sourceFailureMetrics
-	sourceRecordsAdded   atomic.Int64
-	sourceRecordsReject  atomic.Int64
-	sourcesTruncated     atomic.Int64
-	candidatesCapped     atomic.Int64
-	sourceFetchFailures  atomic.Int64
-	sourceFetchRetries   atomic.Int64
-	sourceFetchRecovered atomic.Int64
-	claimsTotal          atomic.Int64
-	reclaimsTotal        atomic.Int64
-	probeResultsTotal    [2]atomic.Int64
-	probeUploadBytes     atomic.Int64
-	probeDownloadBytes   atomic.Int64
-	budgetDenialsTotal   atomic.Int64
-	resultConflictsTotal atomic.Int64
-	evictionsTotal       atomic.Int64
-	discardedTotal       atomic.Int64
-	sourceTombstoned     atomic.Int64
-	internalAPIFailures  atomic.Int64
+	sourceRefreshTotal    [4]atomic.Int64 // ok, error, skipped, canceled
+	sourceFailures        sourceFailureMetrics
+	sourceRecordsAdded    atomic.Int64
+	sourceRecordsReject   atomic.Int64
+	sourcesTruncated      atomic.Int64
+	candidatesCapped      atomic.Int64
+	sourceFetchFailures   atomic.Int64
+	sourceFetchRetries    atomic.Int64
+	sourceFetchRecovered  atomic.Int64
+	claimsTotal           atomic.Int64
+	reclaimsTotal         atomic.Int64
+	probeResultsTotal     [2]atomic.Int64
+	probeUploadBytes      atomic.Int64
+	probeDownloadBytes    atomic.Int64
+	budgetDenialsTotal    atomic.Int64
+	resultConflictsTotal  atomic.Int64
+	evictionsTotal        atomic.Int64
+	discardedTotal        atomic.Int64
+	sourceTombstoned      atomic.Int64
+	internalAPIFailures   atomic.Int64
+	publicQueryFailures   atomic.Int64
+	publicStaleResponses  atomic.Int64
+	publicRefreshFailures atomic.Int64
 
 	candidatesGauge       atomic.Int64
 	sourceUniqueGauge     atomic.Int64
@@ -378,6 +381,19 @@ func (m *Metrics) RecordResultConflict() { m.resultConflictsTotal.Add(1) }
 // because the validated-set query failed.
 func (m *Metrics) RecordInternalAPIQueryFailure() { m.internalAPIFailures.Add(1) }
 
+// RecordPublicQueryFailure counts public /proxies and /stats requests answered
+// with 503 because the query failed or was shed.
+func (m *Metrics) RecordPublicQueryFailure() { m.publicQueryFailures.Add(1) }
+
+// RecordPublicStaleResponse counts public /proxies and /stats responses served
+// from an expired cache entry. This is routine: the first request after a TTL
+// expires is answered from the old entry while it refreshes.
+func (m *Metrics) RecordPublicStaleResponse() { m.publicStaleResponses.Add(1) }
+
+// RecordPublicRefreshFailure counts failed background refreshes of an expired
+// public response. While they persist, clients are served older data.
+func (m *Metrics) RecordPublicRefreshFailure() { m.publicRefreshFailures.Add(1) }
+
 func (m *Metrics) SetCounts(candidates, pending, leased, validated int64) {
 	m.candidatesGauge.Store(candidates)
 	m.pendingGauge.Store(pending)
@@ -507,6 +523,9 @@ func (m *Metrics) Handler() http.Handler {
 			{"freeproxyapi_candidates_evicted_total", "Candidates evicted after reaching max_consecutive_failures.", "counter", m.evictionsTotal.Load},
 			{"freeproxyapi_candidates_discarded_total", "Failed candidates discarded by the explicit burst/initial-sweep policy.", "counter", m.discardedTotal.Load},
 			{"freeproxyapi_internal_api_query_failures_total", "Internal API proxy queries that failed and returned 503.", "counter", m.internalAPIFailures.Load},
+			{"freeproxyapi_public_query_failures_total", "Public /proxies and /stats requests that failed or were shed and returned 503.", "counter", m.publicQueryFailures.Load},
+			{"freeproxyapi_public_stale_responses_total", "Public /proxies and /stats responses served from an expired cache entry while it refreshes.", "counter", m.publicStaleResponses.Load},
+			{"freeproxyapi_public_refresh_failures_total", "Background refreshes of expired public /proxies and /stats responses that failed.", "counter", m.publicRefreshFailures.Load},
 			{"freeproxyapi_source_tombstoned_total", "Source endpoints skipped at refresh because their eviction backoff tombstone was still active.", "counter", m.sourceTombstoned.Load},
 			{"freeproxyapi_candidates", "Candidates known to the audit set.", "gauge", m.candidatesGauge.Load},
 			{"freeproxyapi_source_unique", "Unique canonical endpoints in the latest completed source refresh.", "gauge", m.sourceUniqueGauge.Load},
