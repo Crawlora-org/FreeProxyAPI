@@ -178,7 +178,7 @@ check() { # check EXPECTED -- kubectl auth can-i args...
 }
 log "Checking the new credential's scope..."
 check yes -- patch deployments -n "$namespace"
-check yes -- create pods/exec -n "$namespace"
+check yes -- create pods --subresource=exec -n "$namespace"
 check no -- get secrets -n "$namespace"
 check no -- list nodes
 check no -- create clusterrolebindings
