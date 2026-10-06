@@ -36,8 +36,9 @@ ignored `.env` file:
 ./scripts/refresh-kubeconfig.sh
 ```
 
-The wrapper reads `TF_VAR_rackspace_spot_token` from `.env` when present;
-explicit environment variables take precedence. Keep `.env` local and
+The wrapper reads `TF_VAR_rackspace_spot_token` from `.env` when present and
+passes it to Terraform through the child process environment (Terraform does
+not read `.env` itself); explicit environment variables take precedence. Keep `.env` local and
 `0600`, and load it from a secret manager rather than committing it.
 
 The command refreshes Terraform state, asks Rackspace Spot to mint a new

@@ -195,11 +195,25 @@ def verify_kubeconfig(kubectl_cmd: str, kubeconfig: pathlib.Path, timeout: float
         raise RuntimeError("kubeconfig verification failed: Kubernetes /readyz was not reachable")
 
 
-def refresh_terraform(terraform_cmd: str, terraform_dir: pathlib.Path) -> None:
+def terraform_environment(token: str, base_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for the Terraform subprocess, with the resolved token.
+
+    The token may come from .env or terraform.tfvars, neither of which Terraform
+    reads on its own (.env is not a Terraform file), so without this Terraform
+    prompts for var.rackspace_spot_token. The token is passed only through the
+    child's environment, never on its command line, and is never printed.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    env["TF_VAR_rackspace_spot_token"] = token
+    return env
+
+
+def refresh_terraform(terraform_cmd: str, terraform_dir: pathlib.Path, env: dict[str, str] | None = None) -> None:
     try:
         subprocess.run(
-            [terraform_cmd, f"-chdir={terraform_dir}", "apply", "-refresh-only", "-auto-approve"],
+            [terraform_cmd, f"-chdir={terraform_dir}", "apply", "-refresh-only", "-auto-approve", "-input=false"],
             check=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise RuntimeError(f"{terraform_cmd} was not found on PATH") from exc
@@ -291,7 +305,7 @@ def main() -> int:
             )
 
         if not args.skip_terraform_refresh:
-            refresh_terraform(args.terraform_cmd, terraform_dir)
+            refresh_terraform(args.terraform_cmd, terraform_dir, terraform_environment(token))
 
         content = generate_kubeconfig(
             organization_name,
