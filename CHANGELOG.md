@@ -19,6 +19,16 @@ All notable changes are recorded here. The format follows
   Privacy Control and Do Not Track are not honored. Leave the ID empty to load
   nothing. New `privacy_url` option adds a small "Privacy" link to the pages.
 
+### Fixed
+- `k8s/overlays/gost-public-sidecar` copied a bootstrap config with fixed
+  `bootstrap`/`bootstrap` API credentials, while `proxy-router` reloaded GOST
+  with the credentials from the `gost-public-auth` Secret, so every reload
+  failed with HTTP 401 and the proxy listeners never opened unless the Secret
+  used those exact values. The overlay now lets `proxy-router` write the
+  bootstrap config with the Secret's credentials, adds a `gost` startup probe,
+  and pins an image that includes that behavior. Removed the unused
+  `bootstrap-configmap.yaml` and `examples/gost-public-bootstrap.json`.
+
 ### Added
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in
   `docs/deployment.md` for creating the namespace-scoped CI deployer identity

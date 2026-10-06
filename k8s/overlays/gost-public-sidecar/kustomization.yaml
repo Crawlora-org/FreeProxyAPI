@@ -3,17 +3,13 @@ kind: Kustomization
 namespace: gost-public
 resources:
   - namespace.yaml
-  - bootstrap-configmap.yaml
   - deployment.yaml
   - service.yaml
 images:
   - name: ghcr.io/crawlora-org/freeproxyapi
     newName: ghcr.io/crawlora-org/freeproxyapi
-    newTag: "20260912090104"
+    newTag: "20261006141420"
   # Third-party images are pinned by digest, matching k8s/overlays/live-ci.
-  - name: busybox
-    newName: busybox
-    digest: sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662 # 1.36.1
   - name: gogost/gost
     newName: gogost/gost
     digest: sha256:f7a958c451928fbe1b99046d25bd0c9bf42019d4c60a82200f50dc8e617b7580 # 3.3.0
