@@ -5,6 +5,13 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+- `terraform/` (Rackspace Spot provisioning and its kubeconfig helper) and
+  `scripts/refresh-kubeconfig.sh` are no longer part of the repository, and
+  `terraform/` is gitignored so local infrastructure code is never committed.
+  `scripts/ci-kubeconfig.sh` now requires `--admin-kubeconfig PATH` and works
+  with any cluster.
+
 ### Changed
 - Google Analytics, when enabled with `analytics_measurement_id`, now loads only
   after the visitor accepts a consent banner on the built-in pages. Before, it
@@ -17,13 +24,7 @@ All notable changes are recorded here. The format follows
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in
   `docs/deployment.md` for creating the namespace-scoped CI deployer identity
   behind the `KUBE_CONFIG_B64` secret, and `scripts/ci-kubeconfig.sh`, an
-  admin-run script that automates it with the Terraform-managed kubeconfig.
-
-### Fixed
-- `scripts/refresh-kubeconfig.sh` now passes the token it resolved from `.env`
-  to Terraform through the child process environment, and runs Terraform with
-  `-input=false`. Before, Terraform prompted for `var.rackspace_spot_token`
-  even when the token was in `.env`.
+  admin-run script that automates it with an admin kubeconfig for any cluster.
 
 ## [0.1.0] - 2026-10-06
 

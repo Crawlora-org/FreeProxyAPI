@@ -67,26 +67,24 @@ A cluster admin does this once, from a workstation. CI never creates or changes
 it, and no agent or workflow should handle the admin credential.
 
 **Quick path.** [`scripts/ci-kubeconfig.sh`](../scripts/ci-kubeconfig.sh)
-performs the steps below with the Terraform-managed admin kubeconfig. It shows
-the target cluster and asks you to confirm it, applies the RBAC, builds the
+performs the steps below with an admin kubeconfig for your cluster. It shows the
+target cluster and asks you to confirm it, applies the RBAC, builds the
 kubeconfig, verifies that it can deploy but cannot read Secrets or change the
 cluster, and then stores the result without writing it to disk:
 
 ```sh
-./scripts/ci-kubeconfig.sh --refresh --set-secret --repo OWNER/REPO
+./scripts/ci-kubeconfig.sh --admin-kubeconfig PATH --set-secret --repo OWNER/REPO
 ```
 
-`--refresh` first mints a fresh admin kubeconfig through
-`scripts/refresh-kubeconfig.sh` (see [terraform/README.md](../terraform/README.md));
-leave it out to reuse `terraform/kubeconfig.yaml`, or pass
-`--admin-kubeconfig PATH` for another cluster. Use `--print | pbcopy` instead of
-`--set-secret` to get the base64 value for another secret store. The script is
-idempotent and safe to re-run. The manual steps follow for reference or for
-clusters you do not manage with this repository's Terraform.
+Get a current admin kubeconfig from your provider first, for example
+`aws eks update-kubeconfig`, `gcloud container clusters get-credentials`,
+`az aks get-credentials`, or your provider's console. Use `--print | pbcopy`
+instead of `--set-secret` to get the base64 value for another secret store. The
+script works with any Kubernetes cluster, is idempotent, and is safe to
+re-run. The manual steps follow for reference.
 
-1. Use an admin kubeconfig for the target cluster (for the Terraform-managed
-   cluster, `scripts/refresh-kubeconfig.sh` writes one; it is short-lived and
-   must not be stored in GitHub). Create the namespace if it does not exist,
+1. Use an admin kubeconfig for the target cluster (admin credentials are often
+   short-lived and must not be stored in GitHub). Create the namespace if it does not exist,
    then apply [`k8s/ci-deployer/rbac.yaml`](../k8s/ci-deployer/rbac.yaml), which
    defines a `ci-deployer` ServiceAccount, a namespaced Role, its RoleBinding,
    and a non-expiring token Secret:

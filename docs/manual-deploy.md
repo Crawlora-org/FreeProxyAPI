@@ -39,13 +39,13 @@ placeholder digest, runs the same resource validation as CI, and performs a
 client-side dry run. It builds, pushes, and applies nothing.
 
 ```sh
-scripts/deploy-live-manual.sh --builder <amd64-builder> --kubeconfig terraform/kubeconfig.yaml
+scripts/deploy-live-manual.sh --builder <amd64-builder> --kubeconfig <admin-kubeconfig>
 ```
 
 Then deploy:
 
 ```sh
-scripts/deploy-live-manual.sh --yes --builder <amd64-builder> --kubeconfig terraform/kubeconfig.yaml
+scripts/deploy-live-manual.sh --yes --builder <amd64-builder> --kubeconfig <admin-kubeconfig>
 ```
 
 With `--yes` the script:

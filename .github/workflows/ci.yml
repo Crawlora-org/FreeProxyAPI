@@ -40,9 +40,6 @@ jobs:
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      # Stdlib-only tests for the kubeconfig refresh helper; no network or cluster.
-      - name: Test kubeconfig refresh helper
-        run: python3 -m unittest discover -s terraform -p 'test_*.py' -v
   manifests:
     runs-on: ubuntu-latest
     steps:

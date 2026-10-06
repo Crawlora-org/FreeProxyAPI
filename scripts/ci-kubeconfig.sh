@@ -5,22 +5,22 @@
 # kubeconfig, so it must not run in CI and is not for automated agents.
 #
 # What it does:
-#   1. (optional) refreshes the Terraform-managed admin kubeconfig,
-#   2. shows the target cluster and asks you to confirm it,
-#   3. applies k8s/ci-deployer/rbac.yaml (ServiceAccount, Role, RoleBinding,
+#   1. shows the target cluster and asks you to confirm it,
+#   2. applies k8s/ci-deployer/rbac.yaml (ServiceAccount, Role, RoleBinding,
 #      token Secret) into the namespace,
-#   4. builds a kubeconfig that uses the ServiceAccount token,
-#   5. checks that it can deploy but cannot read Secrets or touch the cluster,
-#   6. stores it as the KUBE_CONFIG_B64 GitHub environment secret, or prints it
+#   3. builds a kubeconfig that uses the ServiceAccount token,
+#   4. checks that it can deploy but cannot read Secrets or touch the cluster,
+#   5. stores it as the KUBE_CONFIG_B64 GitHub environment secret, or prints it
 #      base64-encoded for you to pipe somewhere.
 #
+# Works with any Kubernetes cluster: pass an admin kubeconfig from your provider.
 # It is idempotent: re-running reuses the same ServiceAccount token. See
 # "Creating the CI deployer identity" in docs/deployment.md.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/ci-kubeconfig.sh (--set-secret | --print) [options]
+Usage: scripts/ci-kubeconfig.sh --admin-kubeconfig PATH (--set-secret | --print) [options]
 
 Output (exactly one):
   --set-secret            Store the result as the KUBE_CONFIG_B64 secret with gh.
@@ -28,10 +28,8 @@ Output (exactly one):
                           terminal; pipe it, e.g.  ... --print | pbcopy
 
 Options:
-  --admin-kubeconfig PATH Admin kubeconfig to use (default: terraform/kubeconfig.yaml).
-  --refresh               Run scripts/refresh-kubeconfig.sh first to mint a fresh
-                          admin kubeconfig (needs the Rackspace Spot token; see
-                          terraform/README.md). Only with the default path.
+  --admin-kubeconfig PATH Admin kubeconfig for the target cluster (required). Get a
+                          current one from your provider's CLI or console.
   --namespace NAME        Target namespace (default: freeproxyapi).
   --repo OWNER/REPO       Repository for --set-secret (default: gh's current repo).
   --env NAME              GitHub environment for --set-secret (default: production).
@@ -44,17 +42,16 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 log() { printf '%s\n' "$*" >&2; }
 
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-admin_kubeconfig="$repo_root/terraform/kubeconfig.yaml"
+admin_kubeconfig=""
 namespace=freeproxyapi
-refresh=0 set_secret=0 print=0 assume_yes=0
+set_secret=0 print=0 assume_yes=0
 gh_repo="" gh_env=production
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --set-secret) set_secret=1 ;;
     --print) print=1 ;;
-    --admin-kubeconfig) [ $# -ge 2 ] || die "--admin-kubeconfig needs a path"; admin_kubeconfig=$2; custom_path=1; shift ;;
-    --refresh) refresh=1 ;;
+    --admin-kubeconfig) [ $# -ge 2 ] || die "--admin-kubeconfig needs a path"; admin_kubeconfig=$2; shift ;;
     --namespace) [ $# -ge 2 ] || die "--namespace needs a value"; namespace=$2; shift ;;
     --repo) [ $# -ge 2 ] || die "--repo needs OWNER/REPO"; gh_repo=$2; shift ;;
     --env) [ $# -ge 2 ] || die "--env needs a name"; gh_env=$2; shift ;;
@@ -66,7 +63,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ $((set_secret + print)) -eq 1 ] || { usage >&2; die "choose exactly one of --set-secret or --print"; }
-[ "$refresh" -eq 0 ] || [ -z "${custom_path:-}" ] || die "--refresh only works with the default admin kubeconfig"
+[ -n "$admin_kubeconfig" ] || { usage >&2; die "--admin-kubeconfig is required"; }
 printf '%s' "$namespace" | grep -Eq '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' || die "invalid namespace: $namespace"
 if [ "$print" -eq 1 ] && [ -t 1 ]; then
   die "refusing to print a credential to a terminal; pipe it (e.g. --print | pbcopy) or use --set-secret"
@@ -76,11 +73,7 @@ command -v kubectl >/dev/null 2>&1 || die "kubectl is required"
 command -v base64 >/dev/null 2>&1 || die "base64 is required"
 if [ "$set_secret" -eq 1 ]; then command -v gh >/dev/null 2>&1 || die "gh is required for --set-secret"; fi
 
-if [ "$refresh" -eq 1 ]; then
-  log "Refreshing the Terraform-managed admin kubeconfig..."
-  "$repo_root/scripts/refresh-kubeconfig.sh" >&2
-fi
-[ -s "$admin_kubeconfig" ] || die "admin kubeconfig not found: $admin_kubeconfig (try --refresh, or pass --admin-kubeconfig)"
+[ -s "$admin_kubeconfig" ] || die "admin kubeconfig not found: $admin_kubeconfig"
 
 # Only the chosen file is used: never merge in whatever $KUBECONFIG points at.
 admin() { KUBECONFIG="$admin_kubeconfig" kubectl --request-timeout=30s "$@"; }
@@ -108,7 +101,7 @@ case "$preflight" in
   *)
     case "$preflight_msg$preflight" in
       *Unauthorized*|*"must be logged in"*|*"provide credentials"*)
-        die "the admin kubeconfig is not authorized (its token has probably expired). Refresh it first, for example: ./scripts/refresh-kubeconfig.sh (see terraform/README.md), or pass a current --admin-kubeconfig" ;;
+        die "the admin kubeconfig is not authorized (its token has probably expired). Fetch a current one from your provider and pass it with --admin-kubeconfig" ;;
       *) die "cannot reach the cluster with $admin_kubeconfig: ${preflight_msg:-$preflight}" ;;
     esac ;;
 esac

@@ -38,8 +38,8 @@ Rollback snapshots and evidence are saved locally under
 `/tmp/freeproxyapi-source-expansion/`. To restore the previous source config:
 
 ```sh
-kubectl --kubeconfig terraform/kubeconfig.yaml -n freeproxyapi patch configmap freeproxyapi-config --type merge --patch-file /tmp/freeproxyapi-source-expansion/rollback-patch.json
-kubectl --kubeconfig terraform/kubeconfig.yaml -n freeproxyapi rollout restart deployment/freeproxyapi
+kubectl --kubeconfig <admin-kubeconfig> -n freeproxyapi patch configmap freeproxyapi-config --type merge --patch-file /tmp/freeproxyapi-source-expansion/rollback-patch.json
+kubectl --kubeconfig <admin-kubeconfig> -n freeproxyapi rollout restart deployment/freeproxyapi
 ```
 
 New source references: [RelayGlass](https://github.com/relayglass/free-proxy-list),
