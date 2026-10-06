@@ -104,6 +104,8 @@ type Config struct {
 	// PublicBaseURL is the public origin of this deployment, used for the
 	// canonical, Open Graph, and code-sample URLs in the embedded pages.
 	PublicBaseURL string
+	// PrivacyURL is linked from the analytics consent banner.
+	PrivacyURL string
 	// AnalyticsMeasurementID enables Google Analytics on the embedded pages
 	// when set. Empty by default: nothing third-party is loaded.
 	AnalyticsMeasurementID  string
@@ -255,6 +257,7 @@ type fileConfig struct {
 	MaxCandidates            int64    `json:"max_candidates"`
 	PublicBaseURL            string   `json:"public_base_url"`
 	AnalyticsMeasurementID   string   `json:"analytics_measurement_id"`
+	PrivacyURL               string   `json:"privacy_url"`
 	TrustedProxyCIDRs        []string `json:"trusted_proxy_cidrs"`
 	LeaseTTL                 string   `json:"lease_ttl"`
 	SourceMaxBytes           int64    `json:"source_max_bytes"`
@@ -348,6 +351,11 @@ func LoadConfig(path string) (Config, error) {
 	config.PublicBaseURL = file.PublicBaseURL
 	applyStringEnv("FREEPROXYAPI_PUBLIC_BASE_URL", &config.PublicBaseURL)
 	if config.PublicBaseURL, err = normalizePublicBaseURL(config.PublicBaseURL); err != nil {
+		return Config{}, err
+	}
+	config.PrivacyURL = file.PrivacyURL
+	applyStringEnv("FREEPROXYAPI_PRIVACY_URL", &config.PrivacyURL)
+	if config.PrivacyURL, err = normalizePrivacyURL(config.PrivacyURL); err != nil {
 		return Config{}, err
 	}
 	config.AnalyticsMeasurementID = file.AnalyticsMeasurementID

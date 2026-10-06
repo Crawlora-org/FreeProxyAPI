@@ -5,6 +5,14 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Google Analytics, when enabled with `analytics_measurement_id`, now loads only
+  after the visitor accepts a consent banner on the built-in pages. Before, it
+  loaded after the first interaction or after 3.5 seconds with no choice. Global
+  Privacy Control and Do Not Track count as declining, and an "Analytics
+  settings" link reopens the banner. New `privacy_url` option links the banner
+  to a privacy notice.
+
 ### Added
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in
   `docs/deployment.md` for creating the namespace-scoped CI deployer identity
