@@ -60,19 +60,19 @@ func validateAnalyticsMeasurementID(raw string) (string, error) {
 //   - {{API_ORIGIN}} in code samples becomes public_base_url, or a placeholder
 //     that page script replaces with the visitor's own origin.
 //   - The MaxMind attribution line is dropped unless a GeoIP database is configured.
-//   - The analytics block, including its consent banner, is dropped unless
-//     analytics_measurement_id is set, so a default deployment never loads a
-//     third-party script or reports visitors. When it is set, Google Analytics
-//     still loads only after the visitor accepts the banner.
-//   - The banner's privacy link is dropped unless privacy_url is set.
+//   - The analytics block is dropped unless analytics_measurement_id is set, so
+//     a default deployment never loads a third-party script or reports
+//     visitors. When it is set, Google Analytics loads on every page view; there
+//     is no consent step, so the operator's privacy notice must say so.
+//   - The footer privacy link is dropped unless privacy_url is set.
 //
 // Both values are validated by LoadConfig, which keeps the substitution safe.
 // pageOptions are the deployment-specific values rendered into the pages.
 type pageOptions struct {
 	BaseURL       string
 	MeasurementID string
-	// PrivacyURL is linked from the analytics consent banner; the link is
-	// omitted when it is empty.
+	// PrivacyURL is linked from a small footer link next to the analytics
+	// script; the link is omitted when it is empty.
 	PrivacyURL string
 	// GeoIPAttribution shows MaxMind's required attribution; set it when a
 	// GeoLite2 database is configured, since the pages then display derived

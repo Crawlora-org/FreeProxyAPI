@@ -120,8 +120,8 @@ rest of this table controls how soon candidates are probed again.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `analytics_measurement_id` | empty | Google Analytics 4 ID (`G-XXXXXXXXXX`). Empty means the pages load no third-party scripts and send nothing to Google. When set, the pages show a consent banner and load Google Analytics only after the visitor accepts. A Global Privacy Control or Do Not Track signal counts as declining, and an "Analytics settings" link lets visitors change their mind. You are still responsible for any other notice or choice the law where your visitors live requires. |
-| `privacy_url` | empty | `http(s)` URL of your privacy notice, linked from the consent banner. |
+| `analytics_measurement_id` | empty | Google Analytics 4 ID (`G-XXXXXXXXXX`). Empty means the pages load no third-party scripts and send nothing to Google. When set, the pages load Google Analytics on every page view with no consent step, and ignore Global Privacy Control and Do Not Track, so your privacy notice must say so and you are responsible for any consent the law where your visitors live requires. |
+| `privacy_url` | empty | `http(s)` URL of your privacy notice, shown as a small "Privacy" link on the built-in pages when analytics is on. |
 | `cloudflare_web_analytics` | `false` | Set to `true` only if Cloudflare Web Analytics auto-install is on for your hostname: it lets the injected beacon script through the pages' Content-Security-Policy. |
 
 Privacy details are in [privacy.md](privacy.md).

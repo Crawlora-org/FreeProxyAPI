@@ -13,12 +13,11 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
-- Google Analytics, when enabled with `analytics_measurement_id`, now loads only
-  after the visitor accepts a consent banner on the built-in pages. Before, it
-  loaded after the first interaction or after 3.5 seconds with no choice. Global
-  Privacy Control and Do Not Track count as declining, and an "Analytics
-  settings" link reopens the banner. New `privacy_url` option links the banner
-  to a privacy notice.
+- Google Analytics, when enabled with `analytics_measurement_id`, now loads on
+  every page view of the built-in pages. Before, it loaded after the first
+  interaction or after 3.5 seconds. There is no consent banner, and Global
+  Privacy Control and Do Not Track are not honored. Leave the ID empty to load
+  nothing. New `privacy_url` option adds a small "Privacy" link to the pages.
 
 ### Added
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in

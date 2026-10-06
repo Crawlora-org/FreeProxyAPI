@@ -23,36 +23,35 @@ does by default.
 ## Analytics
 
 The built-in homepage and dashboard load **no** third-party scripts unless the
-operator sets `analytics_measurement_id`. When it is set, the pages show a
-consent banner and load Google Analytics 4 **only if the visitor accepts**:
+operator sets `analytics_measurement_id`. When it is set, the pages load
+Google Analytics 4 on every page view:
 
-- Nothing is requested from Google, and no analytics cookies are set, before
-  the visitor chooses. Declining is as easy as accepting.
-- The choice is remembered in the browser's local storage on that device
-  (`fpa-analytics-consent`). It is not sent anywhere.
-- A browser's Global Privacy Control or Do Not Track signal is treated as
-  "decline": no banner is shown and Google Analytics never loads.
-- The "Analytics settings" link at the bottom left of each page reopens the
-  banner. Declining after having accepted stops measurement and removes the
-  Google Analytics cookies the page can see.
-- When accepted, Google Analytics sends usage data to Google and sets cookies
-  (`_ga`, `_ga_*`) under Google's own terms.
+- There is no consent banner or opt-in. Google Analytics starts as soon as the
+  page loads, sends usage data to Google, and sets cookies (`_ga`, `_ga_*`)
+  under Google's own terms.
+- A browser's Global Privacy Control or Do Not Track signal is **not**
+  honored.
+- Operators who need consent, for example because their visitors are in
+  jurisdictions that require it, should leave `analytics_measurement_id` empty.
+- When `privacy_url` is set, a small "Privacy" link at the bottom left of each
+  page points to the operator's privacy notice.
 
-The hosted service at freeproxyapi.crawlora.net has analytics enabled and shows
-this banner. The API endpoints (`/proxies`, `/stats`, `/get`) never run
-analytics. Operators set `privacy_url` so the banner links to their own privacy
-notice.
+The hosted service at freeproxyapi.crawlora.net has analytics enabled and loads
+Google Analytics this way. The API endpoints (`/proxies`, `/stats`, `/get`)
+never run analytics.
 
 ## Infrastructure
 
 Traffic to the hosted service passes through Cloudflare, which processes
 request metadata (including IP addresses) under its own terms and may keep edge
-logs, and may inject its own Web Analytics beacon into pages if that is enabled on the hostname. Cloudflare describes that beacon as cookieless, and it is not covered by the consent banner. The application itself writes no per-request access log.
+logs, and may inject its own Web Analytics beacon into pages if that is enabled on the hostname. Cloudflare describes that beacon as cookieless, and it is separate from Google Analytics. The application itself writes no per-request access log.
 
 ## Your choices
 
 - Use the hosted API without the web pages: `/proxies`, `/stats` and `/get` run
-  no analytics. On the pages, decline the banner or enable Global Privacy Control.
+  no analytics. The pages always load Google Analytics, so to avoid it, use the
+  API directly or block `googletagmanager.com` and `google-analytics.com` in your
+  browser.
 - Self-host: analytics are off by default, and you control retention.
 - Questions or removal requests about data in the hosted service: open an issue
   with the "Abuse report or removal request" template.
