@@ -24,6 +24,9 @@ Rules for anyone, human or automated, changing this repository.
   permission to use. Do not add defaults that point at third-party services,
   and keep request budgets conservative. See
   [docs/responsible-use.md](docs/responsible-use.md).
+- Agents must not run `scripts/ci-kubeconfig.sh`, `scripts/refresh-kubeconfig.sh`,
+  or anything else that uses an admin kubeconfig or writes cluster or CI
+  credentials. A maintainer runs those by hand.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md), not in a
   public issue.
 
