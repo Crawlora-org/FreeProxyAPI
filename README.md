@@ -200,8 +200,13 @@ Important settings include:
   show the origin the visitor reached and the canonical tags are omitted.
 - `analytics_measurement_id` — optional Google Analytics 4 ID (`G-XXXXXXXXXX`).
   Empty by default: the built-in pages load no third-party scripts and send
-  nothing to Google. Set it only if you accept analytics on your own visitors
-  and have given them any notice or choice the law where they live requires.
+  nothing to Google. When set, the pages show a consent banner and load Google
+  Analytics only after the visitor accepts; a Global Privacy Control or Do Not
+  Track signal counts as declining, and an "Analytics settings" link lets
+  visitors change their mind. You are still responsible for any other notice or
+  choice the law where your visitors live requires.
+- `privacy_url` — optional http(s) URL of your privacy notice, linked from the
+  consent banner.
 - `cloudflare_web_analytics` — set to `true` only if Cloudflare Web Analytics
   auto-install is on for your hostname: it lets the injected beacon script
   through the pages' Content-Security-Policy. Off by default.

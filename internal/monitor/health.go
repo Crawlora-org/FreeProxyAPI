@@ -381,6 +381,7 @@ func startHealthServer(addr string, runner *Runner) (*healthServer, error) {
 	pageOpts := pageOptions{
 		BaseURL:                runner.config.PublicBaseURL,
 		MeasurementID:          runner.config.AnalyticsMeasurementID,
+		PrivacyURL:             runner.config.PrivacyURL,
 		GeoIPAttribution:       runner.config.GeoIPDBPath != "" || runner.config.GeoIPASNDBPath != "",
 		CloudflareWebAnalytics: runner.config.CloudflareWebAnalytics,
 	}

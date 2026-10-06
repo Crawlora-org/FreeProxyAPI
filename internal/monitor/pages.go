@@ -60,14 +60,20 @@ func validateAnalyticsMeasurementID(raw string) (string, error) {
 //   - {{API_ORIGIN}} in code samples becomes public_base_url, or a placeholder
 //     that page script replaces with the visitor's own origin.
 //   - The MaxMind attribution line is dropped unless a GeoIP database is configured.
-//   - The analytics block is dropped unless analytics_measurement_id is set, so
-//     a default deployment never loads a third-party script or reports visitors.
+//   - The analytics block, including its consent banner, is dropped unless
+//     analytics_measurement_id is set, so a default deployment never loads a
+//     third-party script or reports visitors. When it is set, Google Analytics
+//     still loads only after the visitor accepts the banner.
+//   - The banner's privacy link is dropped unless privacy_url is set.
 //
 // Both values are validated by LoadConfig, which keeps the substitution safe.
 // pageOptions are the deployment-specific values rendered into the pages.
 type pageOptions struct {
 	BaseURL       string
 	MeasurementID string
+	// PrivacyURL is linked from the analytics consent banner; the link is
+	// omitted when it is empty.
+	PrivacyURL string
 	// GeoIPAttribution shows MaxMind's required attribution; set it when a
 	// GeoLite2 database is configured, since the pages then display derived
 	// country and ASN data.
@@ -98,6 +104,8 @@ func renderPage(raw []byte, opts pageOptions) []byte {
 			continue
 		case !opts.GeoIPAttribution && strings.Contains(line, "{{GEOIP_ATTRIBUTION}}"):
 			continue
+		case opts.PrivacyURL == "" && strings.Contains(line, "{{PRIVACY_URL}}"):
+			continue
 		}
 		out = append(out, line)
 	}
@@ -111,6 +119,7 @@ func renderPage(raw []byte, opts pageOptions) []byte {
 		"{{API_ORIGIN_FALLBACK}}", pageOriginFallback,
 		"{{MEASUREMENT_ID}}", measurementID,
 		"{{GEOIP_ATTRIBUTION}}", geoipAttribution,
+		"{{PRIVACY_URL}}", opts.PrivacyURL,
 	).Replace(strings.Join(out, "\n")))
 }
 
@@ -166,4 +175,20 @@ func contentSecurityPolicy(body []byte, analytics, cloudflareBeacon bool) string
 		"form-action 'self'",
 		"frame-ancestors 'none'",
 	}, "; ")
+}
+
+// normalizePrivacyURL validates privacy_url: an http(s) URL without
+// credentials, query, or fragment-breaking characters. Unlike public_base_url it
+// may carry a path. It returns "" when unset.
+func normalizePrivacyURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" ||
+		parsed.User != nil || strings.ContainsAny(raw, "\"'<>\\ \t\r\n") {
+		return "", fmt.Errorf("privacy_url must be an http(s) URL without credentials or quote characters, such as https://example.com/privacy")
+	}
+	return raw, nil
 }
