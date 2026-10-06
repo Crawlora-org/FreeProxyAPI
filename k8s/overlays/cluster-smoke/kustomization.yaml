@@ -5,7 +5,7 @@ resources:
 images:
   - name: ghcr.io/crawlora-org/freeproxyapi
     newName: ghcr.io/crawlora-org/freeproxyapi
-    newTag: "20260911152031"
+    newTag: "20261006141420"
 patches:
   - target:
       kind: Deployment
