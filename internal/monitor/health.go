@@ -35,9 +35,17 @@ const (
 	publicProxyRateWindow     = time.Minute
 	publicProxyCacheControl   = "public, max-age=30, s-maxage=30"
 	publicProxyCORSMaxAge     = 600
-	// publicProxyMaxLimit caps one /proxies page. An omitted, zero, negative,
-	// or larger limit returns up to this many results; use offset to page.
+	// publicProxyMaxLimit is the largest page /proxies can serve: the ceiling for
+	// public_max_limit and its default, and what the response cache is sized
+	// for. A larger limit is clamped to the configured maximum; use offset to
+	// page.
 	publicProxyMaxLimit = 1000
+	// publicProxyDefaultLimit is the page size when limit is omitted, zero,
+	// negative, or not a number. Clients that want more pages ask for them with
+	// offset and has_more. It is also the page size above which a request is
+	// counted as a "large page" so an operator can see when it is safe to lower
+	// public_max_limit to this value.
+	publicProxyDefaultLimit = 100
 	// publicProxyMaxOffset bounds the store work one page request can cause;
 	// offset+limit results are read before the page is sliced out.
 	publicProxyMaxOffset = 100_000
@@ -685,10 +693,13 @@ func (h *healthHandlers) proxies(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, r, http.StatusTooManyRequests, map[string]string{"error": "rate limit exceeded"})
 		return
 	}
-	filter, offset, err := publicProxyPage(r)
+	filter, offset, requested, err := publicProxyPage(r, h.runner.config.publicMaxLimit())
 	if err != nil {
 		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	if requested > publicProxyDefaultLimit && h.runner.metrics != nil {
+		h.runner.metrics.RecordPublicLargePageRequest()
 	}
 	filter.ClassificationMaxAgeMs = h.runner.config.ClassificationMaxAge.Milliseconds()
 	cacheKey := publicProxyCacheKey(filter, offset)
@@ -880,26 +891,33 @@ type publicProxiesPayload struct {
 }
 
 // publicProxyPage parses the public /proxies filter and page. The limit is
-// always normalized into 1..publicProxyMaxLimit; an error is returned only for
-// an invalid max_age or an offset that is not an integer in
-// 0..publicProxyMaxOffset.
-func publicProxyPage(r *http.Request) (store.ProxyFilter, int, error) {
-	filter, err := proxyFilter(r)
+// always normalized into 1..maxLimit: an omitted, zero, negative, or invalid
+// value becomes publicProxyDefaultLimit (or maxLimit if that is smaller), and a
+// value above maxLimit is clamped to it. requested is the limit the caller
+// asked for, before normalizing, so callers can tell who still asks for large
+// pages. An error is returned only for an invalid max_age or an offset that is
+// not an integer in 0..publicProxyMaxOffset.
+func publicProxyPage(r *http.Request, maxLimit int) (filter store.ProxyFilter, offset, requested int, err error) {
+	filter, err = proxyFilter(r)
 	if err != nil {
-		return filter, 0, err
+		return filter, 0, 0, err
 	}
-	if filter.Limit <= 0 || filter.Limit > publicProxyMaxLimit {
-		filter.Limit = publicProxyMaxLimit
+	requested = filter.Limit
+	switch {
+	case filter.Limit <= 0:
+		filter.Limit = min(publicProxyDefaultLimit, maxLimit)
+	case filter.Limit > maxLimit:
+		filter.Limit = maxLimit
 	}
 	raw := strings.TrimSpace(r.URL.Query().Get("offset"))
 	if raw == "" {
-		return filter, 0, nil
+		return filter, 0, requested, nil
 	}
-	offset, err := strconv.Atoi(raw)
+	offset, err = strconv.Atoi(raw)
 	if err != nil || offset < 0 || offset > publicProxyMaxOffset {
-		return filter, 0, fmt.Errorf("offset must be an integer from 0 to %d", publicProxyMaxOffset)
+		return filter, 0, requested, fmt.Errorf("offset must be an integer from 0 to %d", publicProxyMaxOffset)
 	}
-	return filter, offset, nil
+	return filter, offset, requested, nil
 }
 
 // publicProxyCacheControlFor returns the Cache-Control for a response. A cached

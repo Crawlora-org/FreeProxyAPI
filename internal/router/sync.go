@@ -46,9 +46,18 @@ type SyncOptions struct {
 	Limit           int
 }
 
+// apiResponse is one page of the FreeProxyAPI response. HasMore is only sent by
+// the public /proxies endpoint; the internal API returns everything in one
+// response, so HasMore is false and the router makes a single request.
 type apiResponse struct {
 	Proxies []store.QueryProxy `json:"proxies"`
+	HasMore bool               `json:"has_more"`
 }
+
+// maxFetchPages bounds how many pages one refresh follows. The server's page
+// size can be as small as 100 and the total is capped by SyncOptions.Limit
+// (1000 by default), so ten pages are normal and this is only a backstop.
+const maxFetchPages = 50
 
 func (o SyncOptions) defaults() SyncOptions {
 	if o.APIURL == "" {
@@ -172,9 +181,6 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 		return fmt.Errorf("parse API URL: %w", err)
 	}
 	query := requestURL.Query()
-	if opts.Limit > 0 {
-		query.Set("limit", strconv.Itoa(opts.Limit))
-	}
 	setOptionalQuery(query, "country", opts.Country)
 	setOptionalQuery(query, "exit_country", opts.ExitCountry)
 	setOptionalQuery(query, "asn", opts.ASN)
@@ -191,34 +197,11 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	if opts.MaximumLatencyMs > 0 {
 		query.Set("max_latency_ms", strconv.FormatInt(opts.MaximumLatencyMs, 10))
 	}
-	requestURL.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	proxies, err := fetchProxies(ctx, client, opts, requestURL, query, tokenValue)
 	if err != nil {
-		return fmt.Errorf("create API request: %w", err)
+		return err
 	}
-	if !opts.PublicAPI {
-		request.Header.Set("Authorization", "Bearer "+tokenValue)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return fmt.Errorf("query FreeProxyAPI: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("query FreeProxyAPI returned HTTP %d", response.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAPIResponseBytes+1))
-	if err != nil {
-		return fmt.Errorf("read FreeProxyAPI response: %w", err)
-	}
-	if len(body) > maxAPIResponseBytes {
-		return fmt.Errorf("FreeProxyAPI response exceeds %d byte limit; lower the proxy limit", maxAPIResponseBytes)
-	}
-	var payload apiResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return fmt.Errorf("decode FreeProxyAPI response: %w", err)
-	}
-	config, err := BuildConfig(payload.Proxies, BuildOptions{
+	config, err := BuildConfig(proxies, BuildOptions{
 		CountryField:  opts.CountryField,
 		Countries:     opts.Countries,
 		ProxyUsername: opts.ProxyUsername,
@@ -245,6 +228,105 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	}
 	s.reloadPending = false
 	return nil
+}
+
+// fetchProxies reads up to opts.Limit proxies, following the server's paging.
+//
+// The first request asks for the whole limit with no offset, exactly as before,
+// so a server that returns everything in one response (the internal API, or a
+// public API whose maximum page size is at least the limit) costs one request.
+// If the response says has_more, the router continues from the number of
+// proxies received until the limit is reached or the server has no more. That keeps it working when a
+// server caps its page size below the limit, which would otherwise silently
+// shrink the pool to one page.
+//
+// Any failed page fails the whole refresh: the caller then keeps the last
+// generated GOST config instead of replacing it with a partial pool. Pages can
+// overlap when the validated pool changes between requests, so proxies are
+// deduplicated by URL.
+func fetchProxies(ctx context.Context, client *http.Client, opts SyncOptions, base *url.URL, query url.Values, token string) ([]store.QueryProxy, error) {
+	// The per-request timeout still applies to each page; this bounds the whole
+	// refresh so a long chain of slow pages cannot outlast the refresh interval.
+	ctx, cancel := context.WithTimeout(ctx, 4*opts.RequestTimeout)
+	defer cancel()
+
+	var proxies []store.QueryProxy
+	seen := make(map[string]struct{})
+	offset := 0
+	for page := 1; page <= maxFetchPages; page++ {
+		// The same limit on every page: the server clamps it to its page size and
+		// caches by the clamped value, so every router asks for the same pages.
+		pageQuery := cloneQuery(query)
+		pageQuery.Set("limit", strconv.Itoa(opts.Limit))
+		if offset > 0 {
+			pageQuery.Set("offset", strconv.Itoa(offset))
+		}
+		payload, err := fetchPage(ctx, client, opts, base, pageQuery, token)
+		if err != nil {
+			if page > 1 {
+				return nil, fmt.Errorf("page %d: %w", page, err)
+			}
+			return nil, err
+		}
+		for _, proxy := range payload.Proxies {
+			if _, duplicate := seen[proxy.URL]; duplicate {
+				continue
+			}
+			seen[proxy.URL] = struct{}{}
+			proxies = append(proxies, proxy)
+		}
+		if len(proxies) >= opts.Limit {
+			return proxies[:opts.Limit], nil
+		}
+		// Advance by what this page returned. An empty page cannot make
+		// progress, so stop rather than repeat the same request.
+		if !payload.HasMore || len(payload.Proxies) == 0 {
+			return proxies, nil
+		}
+		offset += len(payload.Proxies)
+	}
+	return proxies, nil
+}
+
+func cloneQuery(query url.Values) url.Values {
+	clone := make(url.Values, len(query)+2)
+	for key, values := range query {
+		clone[key] = append([]string(nil), values...)
+	}
+	return clone
+}
+
+// fetchPage requests and decodes one page.
+func fetchPage(ctx context.Context, client *http.Client, opts SyncOptions, base *url.URL, query url.Values, token string) (apiResponse, error) {
+	requestURL := *base
+	requestURL.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
+	if err != nil {
+		return apiResponse{}, fmt.Errorf("create API request: %w", err)
+	}
+	if !opts.PublicAPI {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return apiResponse{}, fmt.Errorf("query FreeProxyAPI: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return apiResponse{}, fmt.Errorf("query FreeProxyAPI returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxAPIResponseBytes+1))
+	if err != nil {
+		return apiResponse{}, fmt.Errorf("read FreeProxyAPI response: %w", err)
+	}
+	if len(body) > maxAPIResponseBytes {
+		return apiResponse{}, fmt.Errorf("FreeProxyAPI response exceeds %d byte limit; lower the proxy limit", maxAPIResponseBytes)
+	}
+	var payload apiResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return apiResponse{}, fmt.Errorf("decode FreeProxyAPI response: %w", err)
+	}
+	return payload, nil
 }
 
 func setOptionalQuery(query url.Values, key, value string) {

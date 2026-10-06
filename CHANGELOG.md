@@ -13,6 +13,15 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
+- `/proxies` returns 100 results when `limit` is omitted, zero, negative, or
+  invalid (it was up to 1000). A larger explicit `limit` is still honored up to
+  the maximum page size. Page with `offset` while `has_more` is true. Page sizes
+  above 100 are deprecated: the maximum on the hosted service will be lowered to
+  100 once `freeproxyapi_public_large_page_requests_total` stops growing.
+- `proxy-router` follows the public API's paging. It still asks for the whole
+  `FREEPROXYAPI_LIMIT` first, so against today's API it makes one request, and
+  it continues with `offset` when the API serves smaller pages. A failed page
+  keeps the previous GOST config instead of replacing it with a partial pool.
 - Image pins in `k8s/base`, `private-cluster`, `cluster-smoke`, `gost-router`
   and `docker-compose.gost-public.yml` move to `20261006141420`, the latest
   published build. The `gost-router` overlay relies on `proxy-router` writing
@@ -55,6 +64,11 @@ All notable changes are recorded here. The format follows
   `bootstrap-configmap.yaml` and `examples/gost-public-bootstrap.json`.
 
 ### Added
+- `public_max_limit` sets the largest `/proxies` page (default 1000, range
+  1 to 1000), and `freeproxyapi_public_large_page_requests_total` counts
+  requests for more than 100 results, so the maximum can be lowered once nothing
+  depends on large pages. See "Lowering the public page size" in
+  `docs/deployment.md`.
 - `k8s/ci-deployer/rbac.yaml` and a step-by-step procedure in
   `docs/deployment.md` for creating the namespace-scoped CI deployer identity
   behind the `KUBE_CONFIG_B64` secret, and `scripts/ci-kubeconfig.sh`, an

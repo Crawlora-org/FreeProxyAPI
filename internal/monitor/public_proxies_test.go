@@ -100,16 +100,22 @@ func TestPublicProxiesLimitsAndExitCountry(t *testing.T) {
 		{"exit_country=us&min_ratio_pct=80&limit=50", 50, "US", 50, 0, true},
 		{"exit_country=US&min_ratio_pct=80&limit=10", 10, "US", 10, 0, true},
 		{"exit_country=US&min_ratio_pct=80&limit=100", 100, "US", 100, 0, true},
-		{"exit_country=US&min_ratio_pct=80", publicProxyMaxLimit, "US", publicProxyMaxLimit, 0, true},
-		{"exit_country=US&min_ratio_pct=80&limit=0", publicProxyMaxLimit, "US", publicProxyMaxLimit, 0, true},
+		// An omitted, zero, negative, or invalid limit is the default page.
+		{"exit_country=US&min_ratio_pct=80", publicProxyDefaultLimit, "US", publicProxyDefaultLimit, 0, true},
+		{"exit_country=US&min_ratio_pct=80&limit=0", publicProxyDefaultLimit, "US", publicProxyDefaultLimit, 0, true},
+		{"exit_country=US&min_ratio_pct=80&limit=-5", publicProxyDefaultLimit, "US", publicProxyDefaultLimit, 0, true},
+		{"exit_country=US&min_ratio_pct=80&limit=lots", publicProxyDefaultLimit, "US", publicProxyDefaultLimit, 0, true},
+		// An explicit limit up to the maximum is honored; more is clamped.
+		{"exit_country=US&min_ratio_pct=80&limit=1000", publicProxyMaxLimit, "US", publicProxyMaxLimit, 0, true},
 		{"exit_country=US&min_ratio_pct=80&limit=2000", publicProxyMaxLimit, "US", publicProxyMaxLimit, 0, true},
-		{"exit_country=US&min_ratio_pct=80&offset=1000", 199, "US", publicProxyMaxLimit, 1000, false},
+		{"exit_country=US&min_ratio_pct=80&offset=1000", 100, "US", publicProxyDefaultLimit, 1000, true},
+		{"exit_country=US&min_ratio_pct=80&offset=1100", 99, "US", publicProxyDefaultLimit, 1100, false},
 		{"exit_country=US&min_ratio_pct=80&limit=100&offset=1150", 49, "US", 100, 1150, false},
 		{"exit_country=US&min_ratio_pct=80&limit=10&offset=1189", 10, "US", 10, 1189, false},
-		{"exit_country=US&min_ratio_pct=80&offset=5000", 0, "US", publicProxyMaxLimit, 5000, false},
+		{"exit_country=US&min_ratio_pct=80&offset=5000", 0, "US", publicProxyDefaultLimit, 5000, false},
 		{"exit_country=US&min_ratio_pct=95&limit=50", 0, "US", 50, 0, false},
 		{"country=US&limit=50", 5, "CA", 50, 0, false},
-		{"country=US&geo_mismatch=true", 5, "CA", publicProxyMaxLimit, 0, false},
+		{"country=US&geo_mismatch=true", 5, "CA", publicProxyDefaultLimit, 0, false},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			recorder := httptest.NewRecorder()

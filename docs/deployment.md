@@ -329,6 +329,31 @@ network blocks our hostname stays listed with an unknown anonymity class instead
 of failing validation. Do not use a shared public echo service for high-volume
 validation unless its operator has approved the traffic.
 
+## Lowering the public page size
+
+`/proxies` serves pages of up to 1000 results, but its default is 100 and pages
+above 100 are deprecated: reading a large list with one request makes the
+server scan the whole validated set, while pages of 100 stop early. The maximum
+is `public_max_limit` (default 1000), so lowering it is a configuration change,
+not a code change. Do it only when nothing depends on large pages, or the
+clients that do will silently receive 100 results instead of up to 1000.
+
+1. Ship a `proxy-router` image that follows `has_more` (it asks for the whole
+   limit first and then continues with `offset`) and move your own sidecars,
+   overlays, and the `docker-compose.gost-public.yml` pin to it. Sidecars that
+   others run keep their older image until they upgrade.
+2. Watch large-page traffic: `sum(rate(freeproxyapi_public_large_page_requests_total[1d]))`.
+   It counts public requests with a `limit` above 100. The built-in pages use at
+   most 50 rows, so this is external clients, including older routers.
+3. When it has stayed near zero for as long as you are willing to wait, set
+   `"public_max_limit": 100` in `k8s/overlays/live-local/monitor.json` through a
+   pull request. Responses then report `limit: 100`, and clients that follow
+   `has_more` keep working. A client that reads only the first page gets 100.
+
+Each page is a separate request against the 60 requests per minute per client
+IP limit, so a router reading 1000 proxies in pages of 100 uses 10 of them per
+refresh.
+
 ## Anonymity classification
 
 When `anonymity_check_url` names an echo endpoint (any service that reflects
@@ -503,10 +528,11 @@ band: `<200ms`, `200-500ms`, `500-1000ms`, `>1000ms`, plus `unknown` when no
 latency has been measured), and `checked_at`. Every count comes from the same
 cached validated-pool aggregate, so the maps add up to `total`.
 
-The public proxy query returns pages of at most 1000 matching results. An optional
-`limit` from 1 to 1000 sets the page size; an omitted, zero, invalid, or larger
-`limit` returns up to 1000. An optional `offset` from 0 to 100000 skips earlier
-matches (other values return `400`). Each response carries `count`, `proxies`,
+The public proxy query returns pages of matching results. An optional `limit`
+from 1 to `public_max_limit` (default 1000) sets the page size; an omitted,
+zero, negative, or invalid `limit` returns 100, and a larger one is clamped. An
+optional `offset` from 0 to 100000 skips earlier matches (other values return
+`400`). Each response carries `count`, `proxies`,
 `limit`, `offset`, and `has_more`; request `offset + limit` while `has_more` is
 true. Pages are best-effort because the validated pool changes between requests:
 

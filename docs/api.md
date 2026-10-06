@@ -29,13 +29,27 @@ curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80
 | `https` | bool | Only proxies whose latest sampled HTTPS/CONNECT check passed within `classification_max_age`. |
 | `exclude_tampered` | bool | Drop proxies whose latest echo check within `classification_max_age` found modified traffic. Unchecked proxies stay included. |
 | `max_age` | duration or seconds | Only proxies whose last successful check is at most this old (for example `30m` or `1800`; maximum `720h`). |
-| `limit` | 1–1000 | Page size. Omitted, zero, invalid, or larger values return up to 1000. |
+| `limit` | 1–1000 | Page size. Omitted, zero, negative, or invalid values return 100. Larger values are clamped to the maximum page size, which is 1000 and may be lowered (see [Paging](#paging)). The response `limit` is the size that was used. |
 | `offset` | 0–100000 | Skip this many matches. Use with `has_more` to page. |
 
 Booleans accept `1`, `true`, `yes`, or `on`. A malformed `country`,
 `exit_country`, `asn`, `anonymity`, `max_age`, or `offset` returns `400`.
 A non-numeric `max_latency_ms` or `min_ratio_pct` is ignored. Pages are
 best-effort because the validated pool changes between requests.
+
+### Paging
+
+The default page is 100 results. To read more, request the next page with
+`offset` while `has_more` is `true`; advance `offset` by `count`, the number of
+proxies the previous page returned. Each page counts against the rate limit, and
+pages are best-effort: the validated pool changes between requests, so a proxy
+can appear on two pages or be skipped, and clients should deduplicate by `url`.
+
+**Page sizes above 100 are deprecated.** Requests for more than 100 results are
+still honored today, up to 1000, but the maximum page size on the hosted service
+will be lowered to 100 once clients stop relying on large pages. Do not assume a
+`limit` larger than 100 is honored: read `limit` in the response and follow
+`has_more`. The `proxy-router` in this repository already does.
 
 ### Response
 

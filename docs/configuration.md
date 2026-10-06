@@ -34,6 +34,7 @@ operate and have approval to use. Read the
 | `trusted_proxy_cidrs` | none | CIDRs of ingress that strips caller-supplied forwarding headers and writes trusted ones. Leave empty to identify clients by socket peer. |
 | `internal_api_token_file` | empty | Bearer-token file for the internal API. The API is disabled when this is empty. See [deployment.md](deployment.md#internal-query-api). |
 | `prometheus_url` | empty | Prometheus base URL (`http(s)`, no credentials, query or fragment). The dashboard needs it. |
+| `public_max_limit` | `1000` (1–1000) | Largest page `/proxies` serves; a larger `limit` is clamped to it. An omitted `limit` is 100, or this value if smaller. Lower it to 100 to cap pages, after `freeproxyapi_public_large_page_requests_total` has stopped growing (see [deployment.md](deployment.md#lowering-the-public-page-size)). |
 
 `/metrics` exposes feed hostnames and probe settings. When `admin_listen_addr`
 is empty (the compatibility default), `/metrics`, `/report` and the internal API
