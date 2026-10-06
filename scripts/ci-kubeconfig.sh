@@ -95,6 +95,16 @@ server=$(admin config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 context=$(admin config current-context)
 [ -n "$server" ] || die "could not read the API server from $admin_kubeconfig"
 
+# Fail early, before asking for confirmation, if the admin credential is not
+# usable. `auth can-i` answers yes or no for a valid token and errors otherwise.
+preflight=$(admin auth can-i create namespaces 2>&1 || true)
+case "$preflight" in
+  yes|no) ;;
+  *Unauthorized*|*"must be logged in"*|*"provide credentials"*)
+    die "the admin kubeconfig is not authorized (its token has probably expired). Refresh it first, for example: ./scripts/refresh-kubeconfig.sh (see terraform/README.md), or pass a current --admin-kubeconfig" ;;
+  *) die "cannot reach the cluster with $admin_kubeconfig: $preflight" ;;
+esac
+
 log "Target cluster : $server"
 log "Context        : $context"
 log "Namespace      : $namespace"
@@ -106,10 +116,16 @@ if [ "$assume_yes" -ne 1 ]; then
   case "$answer" in y|Y|yes|YES) ;; *) die "aborted" ;; esac
 fi
 
-admin get namespace "$namespace" >/dev/null 2>&1 || {
+# Create the namespace only when it is genuinely absent; any other failure
+# (auth, network) must stop the script rather than be mistaken for "missing".
+if ns_out=$(admin get namespace "$namespace" 2>&1); then
+  :
+elif printf '%s' "$ns_out" | grep -q 'NotFound'; then
   log "Creating namespace $namespace..."
   admin create namespace "$namespace" >/dev/null
-}
+else
+  die "could not check namespace $namespace: $ns_out"
+fi
 
 log "Applying k8s/ci-deployer/rbac.yaml..."
 sed "s/namespace: freeproxyapi/namespace: $namespace/" "$repo_root/k8s/ci-deployer/rbac.yaml" | admin apply -f - >&2
