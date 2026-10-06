@@ -54,23 +54,73 @@ and publish an image but never deploy. The job renders
 references, and checks `/readyz`. Deployments are serialized and stale runs
 are skipped so an older build cannot roll back a newer `main` deployment.
 
-Before enabling the job, bootstrap the `freeproxyapi` namespace and create a
-namespace-scoped deployer ServiceAccount/Role/RoleBinding. The role needs
-get/create/patch on `deployments.apps`, `statefulsets.apps`, `services`,
-`configmaps`, `networkpolicies.networking.k8s.io`, and
-`poddisruptionbudgets.policy`, get/list on `pods`, and create on `pods/exec`; it does not
-need direct access to Secrets or cluster-wide resources. Because workload-write
-permissions can indirectly reference existing Secrets, use a dedicated
-namespace and an admission policy that prevents unauthorized secret mounts,
-privileged settings, and host access. The CI overlay deliberately omits the
-Namespace object so the CI credential can remain namespace-scoped.
+Before enabling the job, bootstrap the `freeproxyapi` namespace and create the
+CI deployer identity below. Because workload-write permissions can indirectly
+reference existing Secrets, use a dedicated namespace and an admission policy
+that prevents unauthorized secret mounts, privileged settings, and host access.
+The CI overlay deliberately omits the Namespace object so the CI credential can
+remain namespace-scoped.
 
-Store a kubeconfig for that identity as the `KUBE_CONFIG_B64` secret on the
-GitHub `production` environment. For example, with the GitHub CLI:
+#### Creating the CI deployer identity
 
-```sh
-base64 < ./namespace-scoped-kubeconfig | gh secret set KUBE_CONFIG_B64 --env production
-```
+A cluster admin does this once, from a workstation. CI never creates or changes
+it, and no agent or workflow should handle the admin credential.
+
+1. Use an admin kubeconfig for the target cluster (for the Terraform-managed
+   cluster, `scripts/refresh-kubeconfig.sh` writes one; it is short-lived and
+   must not be stored in GitHub). Create the namespace if it does not exist,
+   then apply [`k8s/ci-deployer/rbac.yaml`](../k8s/ci-deployer/rbac.yaml), which
+   defines a `ci-deployer` ServiceAccount, a namespaced Role, its RoleBinding,
+   and a non-expiring token Secret:
+
+   ```sh
+   kubectl create namespace freeproxyapi   # skip if bootstrap.sh already did
+   kubectl apply -f k8s/ci-deployer/rbac.yaml
+   ```
+
+   The Role allows `get`/`create`/`patch` on `deployments.apps`,
+   `statefulsets.apps`, `services`, `configmaps`, `networkpolicies` and
+   `poddisruptionbudgets`, plus `list`/`watch` on workloads for
+   `rollout status`, `get`/`list`/`delete` on `pods`, and `create` on
+   `pods/exec`. It cannot read Secrets or touch anything cluster-wide. Remove
+   `delete` on pods if you do not want the stale-router-pod fallback.
+
+2. Build a kubeconfig that uses the ServiceAccount token:
+
+   ```sh
+   NS=freeproxyapi
+   SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+   CA=$(kubectl -n $NS get secret ci-deployer-token -o jsonpath='{.data.ca\.crt}')
+   TOKEN=$(kubectl -n $NS get secret ci-deployer-token -o jsonpath='{.data.token}' | base64 --decode)
+   cat > ci-kubeconfig <<EOF
+   apiVersion: v1
+   kind: Config
+   clusters: [{name: c, cluster: {server: $SERVER, certificate-authority-data: $CA}}]
+   users: [{name: ci-deployer, user: {token: $TOKEN}}]
+   contexts: [{name: ci, context: {cluster: c, user: ci-deployer, namespace: $NS}}]
+   current-context: ci
+   EOF
+   ```
+
+3. Check the scope before storing it:
+
+   ```sh
+   KUBECONFIG=./ci-kubeconfig kubectl auth can-i patch deployments -n freeproxyapi   # yes
+   KUBECONFIG=./ci-kubeconfig kubectl auth can-i get secrets -n freeproxyapi         # no
+   KUBECONFIG=./ci-kubeconfig kubectl auth can-i list nodes                           # no
+   ```
+
+4. Store it as the `KUBE_CONFIG_B64` secret on the GitHub `production`
+   environment, then delete the local file:
+
+   ```sh
+   base64 < ci-kubeconfig | tr -d '\n' | gh secret set KUBE_CONFIG_B64 --env production
+   rm ci-kubeconfig
+   ```
+
+To rotate the credential, delete the `ci-deployer-token` Secret, re-apply
+`k8s/ci-deployer/rbac.yaml`, and repeat steps 2 to 4. If the cluster is rebuilt,
+repeat the whole procedure: the secret holds the cluster endpoint and CA.
 
 Keep the `production` environment protected with the repository's normal
 approval policy if deployments should require review. Never commit the
