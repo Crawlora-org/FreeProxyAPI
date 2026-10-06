@@ -145,11 +145,13 @@ time. Each Pod runs its own `proxy-router` and syncs from the internal API
 independently, so the two Pods can briefly serve different upstream sets
 between refreshes. The overlay exposes the all-country listener on `3128` and
 the default US listener on `3129`. The router synchronizer queries at most 1,000
-validated proxies every minute. It reloads GOST on its first refresh, whenever
+validated proxies every minute, following the API's paging (`has_more` and
+`offset`) when it serves fewer results per page than that, and keeping the last
+generated configuration if any page fails. It reloads GOST on its first refresh, whenever
 the rendered configuration changes, and after a failed reload; an unchanged
 configuration is not reloaded. A FreeProxyAPI response larger than 8 MiB is
-rejected with an explicit size error; lower `FREEPROXYAPI_LIMIT` if that
-happens.
+rejected with an explicit size error; lower `FREEPROXYAPI_LIMIT`, the most
+proxies fetched in total per refresh, if that happens.
 
 When `/runtime/gost.json` does not exist yet, `proxy-router` first writes an
 API-only bootstrap config, so `gost` starts even while FreeProxyAPI is still

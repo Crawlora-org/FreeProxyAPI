@@ -104,6 +104,9 @@ type Config struct {
 	// PublicBaseURL is the public origin of this deployment, used for the
 	// canonical, Open Graph, and code-sample URLs in the embedded pages.
 	PublicBaseURL string
+	// PublicMaxLimit is the largest page /proxies serves; a larger limit is
+	// clamped to it. LoadConfig resolves 0 to publicProxyMaxLimit.
+	PublicMaxLimit int
 	// PrivacyURL is linked from a small footer link on the built-in pages.
 	PrivacyURL string
 	// AnalyticsMeasurementID enables Google Analytics on the embedded pages
@@ -173,6 +176,15 @@ func (c Config) workerRedisPoolSize() int {
 		return c.RedisPoolSize
 	}
 	return autoRedisPoolSize(c.Workers)
+}
+
+// publicMaxLimit returns the largest /proxies page, also for Config values
+// built without LoadConfig.
+func (c Config) publicMaxLimit() int {
+	if c.PublicMaxLimit > 0 {
+		return c.PublicMaxLimit
+	}
+	return publicProxyMaxLimit
 }
 
 // apiRedisPoolSize returns the resolved HTTP read pool size.
@@ -256,6 +268,7 @@ type fileConfig struct {
 	MaxRecordsPerSource      int      `json:"max_records_per_source"`
 	MaxCandidates            int64    `json:"max_candidates"`
 	PublicBaseURL            string   `json:"public_base_url"`
+	PublicMaxLimit           int      `json:"public_max_limit"`
 	AnalyticsMeasurementID   string   `json:"analytics_measurement_id"`
 	PrivacyURL               string   `json:"privacy_url"`
 	TrustedProxyCIDRs        []string `json:"trusted_proxy_cidrs"`
@@ -345,6 +358,11 @@ func LoadConfig(path string) (Config, error) {
 	if config.MaxCandidates < 0 {
 		return Config{}, fmt.Errorf("max_candidates must not be negative (0 disables the cap)")
 	}
+	if file.PublicMaxLimit < 0 || file.PublicMaxLimit > publicProxyMaxLimit {
+		return Config{}, fmt.Errorf("public_max_limit must be between 1 and %d (0 uses the default %d)", publicProxyMaxLimit, publicProxyMaxLimit)
+	}
+	config.PublicMaxLimit = file.PublicMaxLimit
+	config.PublicMaxLimit = config.publicMaxLimit()
 	config.CloudflareWebAnalytics = file.CloudflareWebAnalytics
 	config.AdminListenAddr = strings.TrimSpace(file.AdminListenAddr)
 	applyStringEnv("FREEPROXYAPI_ADMIN_LISTEN_ADDR", &config.AdminListenAddr)
