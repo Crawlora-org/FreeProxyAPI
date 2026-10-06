@@ -144,3 +144,26 @@ class SetNamespaceTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RefreshTerraformTest(unittest.TestCase):
+    def test_environment_carries_the_resolved_token_and_keeps_the_rest(self):
+        env = rk.terraform_environment("secret-token", {"PATH": "/bin", "TF_VAR_rackspace_spot_token": "stale"})
+        self.assertEqual(env["TF_VAR_rackspace_spot_token"], "secret-token")
+        self.assertEqual(env["PATH"], "/bin")
+
+    def test_token_reaches_terraform_only_through_the_environment(self):
+        env = rk.terraform_environment("secret-token", {"PATH": "/bin"})
+        with mock.patch.object(rk.subprocess, "run") as run:
+            rk.refresh_terraform("terraform", pathlib.Path("/tmp/tf"), env)
+        command = run.call_args.args[0]
+        self.assertNotIn("secret-token", " ".join(command))
+        self.assertIn("-input=false", command)
+        self.assertEqual(run.call_args.kwargs["env"]["TF_VAR_rackspace_spot_token"], "secret-token")
+
+    def test_failure_does_not_leak_the_token(self):
+        error = subprocess.CalledProcessError(1, ["terraform"])
+        with mock.patch.object(rk.subprocess, "run", side_effect=error):
+            with self.assertRaises(RuntimeError) as ctx:
+                rk.refresh_terraform("terraform", pathlib.Path("/tmp/tf"), {"TF_VAR_rackspace_spot_token": "secret-token"})
+        self.assertNotIn("secret-token", str(ctx.exception))

@@ -11,6 +11,12 @@ All notable changes are recorded here. The format follows
   behind the `KUBE_CONFIG_B64` secret, and `scripts/ci-kubeconfig.sh`, an
   admin-run script that automates it with the Terraform-managed kubeconfig.
 
+### Fixed
+- `scripts/refresh-kubeconfig.sh` now passes the token it resolved from `.env`
+  to Terraform through the child process environment, and runs Terraform with
+  `-input=false`. Before, Terraform prompted for `var.rackspace_spot_token`
+  even when the token was in `.env`.
+
 ## [0.1.0] - 2026-10-06
 
 First public release.
