@@ -104,7 +104,7 @@ type Config struct {
 	// PublicBaseURL is the public origin of this deployment, used for the
 	// canonical, Open Graph, and code-sample URLs in the embedded pages.
 	PublicBaseURL string
-	// PrivacyURL is linked from the analytics consent banner.
+	// PrivacyURL is linked from a small footer link on the built-in pages.
 	PrivacyURL string
 	// AnalyticsMeasurementID enables Google Analytics on the embedded pages
 	// when set. Empty by default: nothing third-party is loaded.

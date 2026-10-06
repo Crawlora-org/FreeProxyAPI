@@ -445,88 +445,20 @@
   </script>
   <!--analytics:begin-->
   <style>
-    .consent { position:fixed; left:16px; right:16px; bottom:16px; z-index:50; max-width:640px; margin:0 auto; padding:16px 18px; border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); box-shadow:0 10px 30px rgba(0,0,0,.45); font-size:14px; line-height:1.5; }
-    .consent[hidden], .consent-settings[hidden] { display:none; }
-    .consent strong { display:block; margin-bottom:4px; font-size:15px; }
-    .consent p { margin:0 0 12px; color:var(--muted); }
-    .consent a { color:var(--cyan); }
-    .consent-actions { display:flex; flex-wrap:wrap; gap:10px; }
-    .consent-actions button { border:1px solid var(--line); border-radius:8px; padding:8px 14px; background:transparent; color:var(--text); font:inherit; font-size:14px; cursor:pointer; }
-    .consent-actions button:hover { border-color:#3c887f; }
-    .consent-actions .accept { border-color:#56cdbc; background:var(--cyan); color:#05201f; }
-    .consent-settings { position:fixed; left:12px; bottom:12px; z-index:40; padding:4px; border:0; background:none; color:var(--muted); font:inherit; font-size:12px; text-decoration:underline; cursor:pointer; }
+    .privacy-link { position:fixed; left:12px; bottom:12px; z-index:40; padding:4px; color:var(--muted); font-size:12px; text-decoration:underline; }
   </style>
-  <div id="consent" class="consent" role="dialog" aria-labelledby="consent-title" aria-describedby="consent-text" hidden>
-    <strong id="consent-title">Analytics</strong>
-    <p id="consent-text">May we use Google Analytics to count visits? It sets cookies and sends usage data to Google, and nothing is loaded unless you accept. The API is not affected either way.
-      <a href="{{PRIVACY_URL}}" rel="noopener">Privacy details</a>
-    </p>
-    <div class="consent-actions"><button type="button" id="consent-decline">Decline</button><button type="button" id="consent-accept" class="accept">Accept</button></div>
-  </div>
-  <button type="button" id="consent-settings" class="consent-settings" hidden>Analytics settings</button>
+  <a class="privacy-link" href="{{PRIVACY_URL}}" rel="noopener">Privacy</a>
   <script>
     (() => {
       const measurementId = '{{MEASUREMENT_ID}}';
-      const STORAGE_KEY = 'fpa-analytics-consent';
-      const banner = document.getElementById('consent');
-      const settings = document.getElementById('consent-settings');
-      const read = () => { try { return localStorage.getItem(STORAGE_KEY); } catch (e) { return null; } };
-      const write = (value) => { try { localStorage.setItem(STORAGE_KEY, value); } catch (e) { /* storage unavailable: the choice lasts for this page only */ } };
-      // A browser-level opt-out is honored without asking.
-      const optedOut = navigator.globalPrivacyControl === true || navigator.doNotTrack === '1';
-      let loaded = false;
-
-      function load() {
-        if (loaded) return;
-        loaded = true;
-        window['ga-disable-' + measurementId] = false;
-        window.dataLayer = window.dataLayer || [];
-        window.gtag = function gtag() { window.dataLayer.push(arguments); };
-        window.gtag('js', new Date());
-        window.gtag('config', measurementId);
-        const script = document.createElement('script');
-        script.async = true;
-        script.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
-        document.head.appendChild(script);
-      }
-
-      // Stops measurement for this page and removes the cookies GA set. GA scopes
-      // its cookies to the registrable domain, so try every parent domain.
-      function unload() {
-        window['ga-disable-' + measurementId] = true;
-        const names = document.cookie.split(';').map((c) => c.split('=')[0].trim())
-          .filter((n) => n === '_ga' || n === '_gid' || n.indexOf('_ga_') === 0);
-        const labels = location.hostname.split('.');
-        const domains = [];
-        for (let i = 0; i < labels.length - 1; i++) domains.push(labels.slice(i).join('.'));
-        names.forEach((name) => {
-          const expired = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
-          document.cookie = expired;
-          domains.forEach((domain) => { document.cookie = expired + '; domain=' + domain; });
-        });
-      }
-
-      function show(focus) {
-        banner.hidden = false;
-        settings.hidden = true;
-        if (focus) document.getElementById('consent-accept').focus();
-      }
-      function hide() { banner.hidden = true; settings.hidden = false; }
-      function choose(value) {
-        write(value);
-        if (value === 'granted') load(); else unload();
-        hide();
-      }
-
-      document.getElementById('consent-accept').addEventListener('click', () => choose('granted'));
-      document.getElementById('consent-decline').addEventListener('click', () => choose('denied'));
-      settings.addEventListener('click', () => show(true));
-
-      if (optedOut) { unload(); return; }
-      const saved = read();
-      if (saved === 'granted') { load(); hide(); }
-      else if (saved === 'denied') { unload(); hide(); }
-      else show(false);
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = function gtag() { window.dataLayer.push(arguments); };
+      window.gtag('js', new Date());
+      window.gtag('config', measurementId);
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
+      document.head.appendChild(script);
     })();
   </script>
   <!--analytics:end-->
