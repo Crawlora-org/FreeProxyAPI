@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# CI applies only namespaced resources. The namespace itself is bootstrapped
+# separately, which lets the GitHub Actions kubeconfig stay namespace-scoped.
+resources:
+  - ../live-local
+images:
+  - name: redis
+    newName: redis
+    digest: sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+  - name: gogost/gost
+    newName: gogost/gost
+    digest: sha256:f7a958c451928fbe1b99046d25bd0c9bf42019d4c60a82200f50dc8e617b7580
+  - name: alpine
+    newName: alpine
+    digest: sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+patches:
+  - target:
+      kind: Namespace
+      name: freeproxyapi
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: freeproxyapi

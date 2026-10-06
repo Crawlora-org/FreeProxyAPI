@@ -1,0 +1,93 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # Called by docker-publish.yml so images are only built and deployed after
+  # tests, race tests, vet, and manifest checks pass for the same commit.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # setup-go caches the Go module and build caches keyed on go.sum.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on: $unformatted"
+            exit 1
+          fi
+      - run: go mod tidy
+      - name: Ensure tidy module graph is committed
+        run: git diff --exit-code -- go.mod go.sum
+      - run: go test ./...
+      - name: Run race tests
+        run: go test -race ./...
+      - run: go vet ./...
+      # Tool versions are pinned; bump them together with the go.mod Go version.
+      - name: Run staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      # Stdlib-only tests for the kubeconfig refresh helper; no network or cluster.
+      - name: Test kubeconfig refresh helper
+        run: python3 -m unittest discover -s terraform -p 'test_*.py' -v
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.31.6
+      - run: |
+          set -euo pipefail
+          kubectl kustomize k8s/base > /dev/null
+          manifest="$(mktemp)"
+          trap 'rm -f "$manifest"' EXIT
+          kubectl kustomize k8s/overlays/live-ci > "$manifest"
+          ruby -ryaml -e '
+            documents = File.read(ARGV.fetch(0)).split(/^---\s*$/).map { |doc| YAML.safe_load(doc) }.compact
+            allowed = %w[ConfigMap Service Deployment StatefulSet NetworkPolicy PodDisruptionBudget]
+            abort "unexpected resource kind" unless documents.all? { |doc| allowed.include?(doc.fetch("kind")) }
+            abort "resource is not namespaced" unless documents.all? { |doc| doc.dig("metadata", "namespace") == "freeproxyapi" }
+            deployments = documents.select { |doc| doc["kind"] == "Deployment" }
+            expected = {
+              "freeproxyapi" => "freeproxyapi",
+              "gost-router" => "proxy-router"
+            }
+            expected.each do |name, container|
+              deployment = deployments.find { |doc| doc.dig("metadata", "name") == name }
+              abort "missing deployment #{name}" unless deployment
+              image = deployment.fetch("spec").fetch("template").fetch("spec").fetch("containers").find { |item| item["name"] == container }.fetch("image")
+              abort "unexpected image for #{name}" unless image.match?(%r{\Aghcr\.io/crawlora-org/freeproxyapi:\d{14}\z})
+            end
+            monitor = deployments.find { |doc| doc.dig("metadata", "name") == "freeproxyapi" }
+            abort "unexpected live monitor replica count" unless monitor.dig("spec", "replicas") == 32
+            spread = monitor.dig("spec", "template", "spec", "topologySpreadConstraints")
+            abort "missing schedulable live monitor node spread" unless spread&.any? { |constraint| constraint["topologyKey"] == "topology.kubernetes.io/hostname" && constraint["whenUnsatisfiable"] == "ScheduleAnyway" }
+          ' "$manifest"
+      - name: Verify Cloudflare Tunnel availability manifest
+        run: |
+          set -euo pipefail
+          manifest="$(mktemp)"
+          trap 'rm -f "$manifest"' EXIT
+          kubectl kustomize k8s/overlays/cloudflared > "$manifest"
+          ruby -ryaml -e '
+            documents = File.read(ARGV.fetch(0)).split(/^---\s*$/).map { |doc| YAML.safe_load(doc) }.compact
+            deployment = documents.find { |doc| doc["kind"] == "Deployment" && doc.dig("metadata", "name") == "cloudflared-freeproxyapi" }
+            abort "missing cloudflared deployment" unless deployment
+            abort "unexpected cloudflared replica count" unless deployment.dig("spec", "replicas") == 2
+            spread = deployment.dig("spec", "template", "spec", "topologySpreadConstraints")
+            abort "missing strict cloudflared node spread" unless spread&.any? { |constraint| constraint["topologyKey"] == "topology.kubernetes.io/hostname" && constraint["whenUnsatisfiable"] == "DoNotSchedule" }
+          ' "$manifest"

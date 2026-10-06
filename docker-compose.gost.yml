@@ -1,0 +1,85 @@
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  freeproxyapi:
+    build: .
+    command: ["monitor", "-config", "/config/monitor-gost.json"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./examples:/config:ro
+      - ./examples/proxies.txt:/data/proxies.txt:ro
+      - ./secrets/freeproxyapi-internal-api-token:/run/secrets/freeproxyapi-internal-api-token:ro
+      - ./secrets/geoip:/geoip:ro
+
+  gost:
+    image: gogost/gost:3.3.0
+    command: ["-C", "/runtime/gost.json"]
+    environment:
+      HOME: /tmp
+    ports:
+      - "127.0.0.1:18080:18080"
+      - "127.0.0.1:3128:3128"
+      - "127.0.0.1:3129:3129"
+      - "127.0.0.1:3130:3130"
+      - "127.0.0.1:3131:3131"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./runtime:/runtime:ro
+
+  proxy-router:
+    build: .
+    entrypoint: ["/usr/local/bin/proxy-router"]
+    depends_on:
+      freeproxyapi:
+        condition: service_healthy
+      gost:
+        condition: service_started
+    environment:
+      FREEPROXYAPI_URL: http://freeproxyapi:8080/internal/api/v1/proxies
+      FREEPROXYAPI_TOKEN_FILE: /run/secrets/freeproxyapi-internal-api-token
+      GOST_CONFIG_FILE: /runtime/gost.json
+      GOST_API_URL: http://gost:18080
+      GOST_API_ADDRESS: :18080
+      GOST_API_USERNAME: "${GOST_API_USERNAME:?set GOST_API_USERNAME}"
+      GOST_API_PASSWORD: "${GOST_API_PASSWORD:?set GOST_API_PASSWORD}"
+      GOST_PROXY_USERNAME: "${GOST_PROXY_USERNAME:?set GOST_PROXY_USERNAME}"
+      GOST_PROXY_PASSWORD: "${GOST_PROXY_PASSWORD:?set GOST_PROXY_PASSWORD}"
+      GOST_COUNTRIES: "${GOST_COUNTRIES:-DE,SG,US}"
+      GOST_COUNTRY_FIELD: "${GOST_COUNTRY_FIELD:-entry}"
+      GOST_REFRESH_INTERVAL: "${GOST_REFRESH_INTERVAL:-1m}"
+      GOST_MIN_RATIO_PCT: "${GOST_MIN_RATIO_PCT:-80}"
+      GOST_MAX_LATENCY_MS: "${GOST_MAX_LATENCY_MS:-0}"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./runtime:/runtime
+      - ./secrets/freeproxyapi-internal-api-token:/run/secrets/freeproxyapi-internal-api-token:ro
+
+volumes:
+  redis-data:

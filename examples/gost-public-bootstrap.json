@@ -1,0 +1,9 @@
+{
+  "api": {
+    "addr": ":18080",
+    "auth": {
+      "username": "bootstrap",
+      "password": "bootstrap"
+    }
+  }
+}

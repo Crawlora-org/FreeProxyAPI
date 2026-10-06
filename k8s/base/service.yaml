@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: freeproxyapi
+  namespace: freeproxyapi
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "8080"
+  labels:
+    app.kubernetes.io/name: freeproxyapi
+spec:
+  selector:
+    app.kubernetes.io/name: freeproxyapi
+    app.kubernetes.io/component: monitor
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

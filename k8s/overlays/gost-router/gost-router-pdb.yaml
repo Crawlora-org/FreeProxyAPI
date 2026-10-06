@@ -1,0 +1,20 @@
+# Limits voluntary disruptions (node drains, cluster upgrades) of the two
+# gost-router replicas to one Pod at a time. Involuntary loss such as spot
+# preemption is not covered by PodDisruptionBudgets.
+#
+# The selector matches only gost-router Pods; the monitor PDB in
+# k8s/base/monitor-pdb.yaml selects app.kubernetes.io/name=freeproxyapi, and a
+# pod matched by more than one PDB cannot be evicted.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gost-router
+  namespace: freeproxyapi
+  labels:
+    app.kubernetes.io/name: gost-router
+    app.kubernetes.io/part-of: freeproxyapi
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gost-router

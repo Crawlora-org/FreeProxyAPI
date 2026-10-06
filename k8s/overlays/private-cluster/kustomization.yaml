@@ -1,0 +1,40 @@
+# Private-cluster deployment overlay.
+#
+# This overlay pins the Deployment to the GitHub Container Registry build and
+# carries no secrets: any private monitor configuration is created out-of-band
+# (see docs/deployment.md), and
+# ghcr-registry is an existing imagePullSecret in the namespace.
+#
+#   kubectl apply -k k8s/overlays/private-cluster
+#
+# Only apply it by hand to a cluster that CI does not manage. The production
+# freeproxyapi namespace is deployed exclusively by CI (see AGENTS.md).
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/crawlora-org/freeproxyapi
+    newName: ghcr.io/crawlora-org/freeproxyapi
+    newTag: "20260911152031"
+patches:
+  - target:
+      kind: Deployment
+      name: freeproxyapi
+    patch: |
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-registry
+      - op: replace
+        path: /spec/replicas
+        value: 32
+      - op: replace
+        path: /spec/template/spec/topologySpreadConstraints/0/whenUnsatisfiable
+        value: ScheduleAnyway
+  - path: geoip-patch.yaml
+    target:
+      kind: Deployment
+      name: freeproxyapi
+  - path: api-token-patch.yaml
+    target:
+      kind: Deployment
+      name: freeproxyapi

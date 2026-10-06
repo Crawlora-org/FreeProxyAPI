@@ -1,0 +1,24 @@
+# Only the monitor replicas talk to Redis (internal/monitor/runner.go).
+# gost-router and cloudflared reach the monitor over HTTP, never Redis.
+# cloudflared pods also carry app.kubernetes.io/name=freeproxyapi, so the
+# component label is required to exclude them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: freeproxyapi-redis
+  namespace: freeproxyapi
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: freeproxyapi-redis
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: freeproxyapi
+              app.kubernetes.io/component: monitor
+      ports:
+        - protocol: TCP
+          port: 6379

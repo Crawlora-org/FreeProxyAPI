@@ -1,0 +1,17 @@
+# Cluster smoke overlay: immutable private image, safe inventory-only config.
+# The registry Secret is provisioned out-of-band by the operator/bootstrap flow.
+resources:
+  - ../../base
+images:
+  - name: ghcr.io/crawlora-org/freeproxyapi
+    newName: ghcr.io/crawlora-org/freeproxyapi
+    newTag: "20260911152031"
+patches:
+  - target:
+      kind: Deployment
+      name: freeproxyapi
+    patch: |
+      - op: add
+        path: /spec/template/spec/imagePullSecrets
+        value:
+          - name: ghcr-registry

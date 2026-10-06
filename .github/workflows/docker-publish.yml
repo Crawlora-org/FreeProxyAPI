@@ -1,0 +1,311 @@
+name: Publish container
+
+# Merges to main no longer deploy immediately. Production deploys are batched:
+# a scheduled run every 30 minutes builds and deploys main only when main has
+# moved past the last successful production deployment. Deploy on request with
+#   gh workflow run "Publish container" --ref main -f force=true
+# (or Actions -> Publish container -> Run workflow). Version tags still build
+# and publish an image but never deploy.
+on:
+  push:
+    tags:
+      - 'v*'
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build and deploy main even if it is already deployed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Decides whether this run builds anything. Scheduled and unforced manual
+  # runs skip everything when main's HEAD is already the commit of the latest
+  # successful production deployment, so an idle half hour costs seconds.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Compare main with the last production deployment
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "push" ]]; then
+            echo "Tag push: build and publish."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT" == "workflow_dispatch" && "$FORCE" == "true" ]]; then
+            echo "Forced manual run: build and deploy."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          last=""
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=30" --jq '.[].id'); do
+            state="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')"
+            if [[ "$state" == "success" ]]; then
+              last="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id" --jq '.sha')"
+              break
+            fi
+          done
+          if [[ -n "$last" && "$last" == "$GITHUB_SHA" ]]; then
+            echo "::notice title=Nothing to deploy::main ($GITHUB_SHA) is already the latest successful production deployment."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Deploying $GITHUB_SHA (last successful production deployment: ${last:-none})."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  publish:
+    needs: [changes, ci]
+    if: needs.changes.outputs.run == 'true'
+    outputs:
+      image_tag: ${{ steps.timestamp.outputs.tag }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: ghcr.io/crawlora-org/freeproxyapi
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image timestamp
+        id: timestamp
+        run: echo "tag=$(date -u +'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Main publishes a UTC build timestamp and updates the stable tag.
+            type=raw,value=${{ steps.timestamp.outputs.tag }}
+            type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-live:
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production-live-deploy
+      # Never cancel a deploy mid apply/rollout. A newer queued run waits, and
+      # the stale-release check below skips any run that is no longer main.
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      IMAGE_NAME: ghcr.io/crawlora-org/freeproxyapi
+      IMAGE_TAG: ${{ needs.publish.outputs.image_tag }}
+      IMAGE_DIGEST: ${{ needs.publish.outputs.image_digest }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Refuse stale release
+        id: freshness
+        run: |
+          set -euo pipefail
+          main_sha="$(git ls-remote origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          if [[ "$main_sha" != "$GITHUB_SHA" ]]; then
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Skipping stale deployment::main is now at $main_sha; this run is for $GITHUB_SHA."
+          else
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up kubectl
+        if: steps.freshness.outputs.current == 'true'
+        uses: azure/setup-kubectl@829323503d1be3d00ca8346e5391ca0b07a9ab0d # v5.1.0
+        with:
+          version: v1.31.6
+
+      - name: Configure kubectl
+        if: steps.freshness.outputs.current == 'true'
+        env:
+          KUBE_CONFIG_B64: ${{ secrets.KUBE_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${KUBE_CONFIG_B64:-}" ]]; then
+            echo "::error title=Missing Kubernetes configuration::KUBE_CONFIG_B64 must be set in the production environment."
+            exit 1
+          fi
+
+          kubeconfig_path="$RUNNER_TEMP/freeproxyapi-kubeconfig"
+          umask 077
+          if ! printf '%s' "$KUBE_CONFIG_B64" | base64 --decode > "$kubeconfig_path"; then
+            echo "::error title=Invalid Kubernetes configuration::KUBE_CONFIG_B64 is not valid base64."
+            rm -f "$kubeconfig_path"
+            exit 1
+          fi
+          if [[ ! -s "$kubeconfig_path" ]]; then
+            echo "::error title=Invalid Kubernetes configuration::Decoded kubeconfig is empty."
+            rm -f "$kubeconfig_path"
+            exit 1
+          fi
+          echo "KUBECONFIG=$kubeconfig_path" >> "$GITHUB_ENV"
+
+      - name: Set live image tag
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9]{14}$ ]]; then
+            echo "::error title=Invalid image tag::Publish did not provide the expected immutable timestamp tag."
+            exit 1
+          fi
+          sed -i -E "s/^(    newTag: \")[^\"]*(\")$/\1$IMAGE_TAG\2/" k8s/overlays/live-local/kustomization.yaml
+          if ! grep -qE "^    newTag: \"$IMAGE_TAG\"\$" k8s/overlays/live-local/kustomization.yaml; then
+            echo "::error title=Image tag update failed::The live overlay does not contain the expected immutable tag."
+            exit 1
+          fi
+
+      - name: Render and validate live manifest
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error title=Invalid image digest::Publish did not provide a valid image digest."
+            exit 1
+          fi
+          expected_image="$IMAGE_NAME@$IMAGE_DIGEST"
+          manifest_path="$RUNNER_TEMP/freeproxyapi-live.yaml"
+          kubectl kustomize k8s/overlays/live-ci > "$manifest_path"
+          sed -i -E "s#(^[[:space:]]*image: $IMAGE_NAME):[^[:space:]]+#\1@$IMAGE_DIGEST#g" "$manifest_path"
+          EXPECTED_IMAGE="$expected_image" ruby -ryaml -e '
+            documents = File.read(ARGV.fetch(0)).split(/^---\s*$/).map { |doc| YAML.safe_load(doc) }.compact
+            allowed = %w[ConfigMap Service Deployment StatefulSet NetworkPolicy PodDisruptionBudget]
+            abort "unexpected resource kind" unless documents.all? { |doc| allowed.include?(doc.fetch("kind")) }
+            abort "resource is not namespaced" unless documents.all? { |doc| doc.dig("metadata", "namespace") == "freeproxyapi" }
+            deployments = documents.select { |doc| doc["kind"] == "Deployment" }
+            expected = {
+              "freeproxyapi" => "freeproxyapi",
+              "gost-router" => "proxy-router"
+            }
+            expected.each do |name, container|
+              deployment = deployments.find { |doc| doc.dig("metadata", "name") == name }
+              abort "missing deployment #{name}" unless deployment
+              image = deployment.fetch("spec").fetch("template").fetch("spec").fetch("containers").find { |item| item["name"] == container }.fetch("image")
+              abort "unexpected image for #{name}" unless image == ENV.fetch("EXPECTED_IMAGE")
+            end
+          ' "$manifest_path"
+          kubectl apply --dry-run=client --validate=true -f "$manifest_path"
+          echo "LIVE_MANIFEST=$manifest_path" >> "$GITHUB_ENV"
+
+      - name: Apply live manifest
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          kubectl apply -f "$LIVE_MANIFEST"
+
+      - name: Wait for live rollouts
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          kubectl -n freeproxyapi rollout status statefulset/freeproxyapi-redis --timeout=5m
+          kubectl -n freeproxyapi rollout status deployment/freeproxyapi --timeout=20m
+          if ! kubectl -n freeproxyapi rollout status deployment/gost-router --timeout=20m; then
+            echo "Router rollout did not finish; checking for an old terminating pod behind a Ready replacement."
+            router_image="$(kubectl -n freeproxyapi get deployment/gost-router -o jsonpath='{.spec.template.spec.containers[?(@.name=="proxy-router")].image}')"
+            # The deployment service account can inspect pods but does not need
+            # ReplicaSet permissions just to identify the current template.
+            current_hash="$(kubectl -n freeproxyapi get pods -l app.kubernetes.io/name=gost-router -o json | jq -r --arg image "$router_image" '[.items[] | select(any(.spec.containers[]?; .name == "proxy-router" and .image == $image))] | sort_by(.metadata.creationTimestamp) | last | .metadata.labels["pod-template-hash"] // empty')"
+            if [[ -z "$current_hash" ]]; then
+              echo "Unable to determine the current router pod-template hash for image ${router_image:-unknown}."
+              exit 1
+            fi
+            ready_replacements="$(kubectl -n freeproxyapi get pods -l app.kubernetes.io/name=gost-router -o json | jq --arg hash "$current_hash" '[.items[] | select(.metadata.labels["pod-template-hash"] == $hash) | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length')"
+            if [[ "$ready_replacements" -lt 1 ]]; then
+              echo "No Ready router replacement found; refusing to force-delete any pod."
+              exit 1
+            fi
+            stale_pods="$(kubectl -n freeproxyapi get pods -l app.kubernetes.io/name=gost-router -o json | jq -r --arg hash "$current_hash" '.items[] | select((.metadata.labels["pod-template-hash"] // "") != $hash) | .metadata.name')"
+            if [[ -z "$stale_pods" ]]; then
+              echo "No stale router pod found after rollout failure."
+              exit 1
+            fi
+            while IFS= read -r pod; do
+              [[ -z "$pod" ]] && continue
+              echo "Removing stale router pod $pod after its replacement became Ready."
+              kubectl -n freeproxyapi delete pod "$pod" --grace-period=0 --force
+            done <<< "$stale_pods"
+            kubectl -n freeproxyapi rollout status deployment/gost-router --timeout=5m
+          fi
+
+      - name: Verify deployed images
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          expected_image="$IMAGE_NAME@$IMAGE_DIGEST"
+          monitor_image="$(kubectl -n freeproxyapi get deployment/freeproxyapi -o jsonpath='{.spec.template.spec.containers[?(@.name=="freeproxyapi")].image}')"
+          router_image="$(kubectl -n freeproxyapi get deployment/gost-router -o jsonpath='{.spec.template.spec.containers[?(@.name=="proxy-router")].image}')"
+          if [[ "$monitor_image" != "$expected_image" || "$router_image" != "$expected_image" ]]; then
+            echo "::error title=Unexpected deployed image::Expected both workloads to use $expected_image; monitor=${monitor_image:-<none>}; router=${router_image:-<none>}."
+            exit 1
+          fi
+
+      - name: Smoke-check monitor readiness
+        if: steps.freshness.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          monitor_pod="$(kubectl -n freeproxyapi get pods \
+            -l app.kubernetes.io/name=freeproxyapi,app.kubernetes.io/component=monitor \
+            --field-selector=status.phase=Running \
+            -o jsonpath='{.items[0].metadata.name}')"
+          if [[ -z "$monitor_pod" ]]; then
+            echo "::error title=Monitor pod unavailable::No running monitor pod was found after rollout."
+            exit 1
+          fi
+          kubectl -n freeproxyapi exec "$monitor_pod" -- wget -q -O - http://127.0.0.1:8080/readyz
+
+      - name: Remove temporary kubeconfig
+        if: always()
+        run: |
+          set -euo pipefail
+          rm -f "${KUBECONFIG:-}"

@@ -1,0 +1,8 @@
+# Changes to CI, deployment, and infrastructure files need the maintainer's review.
+*                @tonywangcn
+/.github/        @tonywangcn
+/k8s/            @tonywangcn
+/scripts/        @tonywangcn
+/terraform/      @tonywangcn
+/Dockerfile      @tonywangcn
+/docker-compose*.yml @tonywangcn

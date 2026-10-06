@@ -1,0 +1,26 @@
+name: Abuse report or removal request
+description: Report misuse of a hosted instance, or ask for a listed endpoint or a feed source to be removed
+labels: [abuse]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Issues are public. Do not post credentials, private data, or details that would help someone attack a system. If you own a listed endpoint or feed, say so.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is this about?
+      options:
+        - Remove a listed proxy endpoint (I operate it)
+        - Remove or stop fetching a feed source (I own it)
+        - Report abuse of the hosted service
+        - Privacy or data question
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: The endpoint or source URL, and how you can show you operate it, or what abuse you observed and when.
+    validations:
+      required: true

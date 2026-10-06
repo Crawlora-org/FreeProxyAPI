@@ -1,0 +1,22 @@
+{
+  "redis_url": "redis://redis:6379/0",
+  "namespace": "freeproxyapi:v1",
+  "sources": [
+    "file:///data/proxies.txt"
+  ],
+  "default_proxy_scheme": "http",
+  "network_validation_enabled": false,
+  "prometheus_url": "",
+  "listen_addr": ":8080",
+  "admin_listen_addr": "127.0.0.1:9090",
+  "fetch_interval": "15m",
+  "request_timeout": "5s",
+  "source_request_timeout": "5s",
+  "lease_ttl": "30s",
+  "source_max_bytes": 1048576,
+  "workers": 2,
+  "global_requests_per_minute": 30,
+  "validated_retest_interval": "6h",
+  "failed_retest_interval": "48h",
+  "max_consecutive_failures": 10
+}

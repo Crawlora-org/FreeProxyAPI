@@ -1,0 +1,29 @@
+.DS_Store
+.claude/
+.env
+.env.*
+__pycache__/
+coverage.out
+dist/
+# Terraform: track *.tf, README, terraform.tfvars.example, and
+# .terraform.lock.hcl; ignore only generated state, plugins, and credentials.
+terraform/.terraform/
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.auto.tfvars
+terraform/kubeconfig*.yaml
+terraform/crash.log
+terraform/crash.*.log
+terraform/*.tfplan
+terraform/override.tf
+terraform/*_override.tf
+# Local Compose runtime state, credentials, and GeoIP databases.
+runtime/
+secrets/
+# Temporary source-expansion notes are intentionally kept out of Git.
+docs/source-expansion-20260912-batch3.md
+docs/source-expansion-20260912-batch4.md
+docs/source-expansion-20260912-batch5.md
+docs/source-expansion-20260912-batch6.md
+docs/source-expansion-20260912-batch7.md

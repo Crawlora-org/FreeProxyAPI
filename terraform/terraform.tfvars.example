@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars or export TF_VAR_rackspace_spot_token. Never commit
+# a real token or a generated state/kubeconfig file.
+rackspace_spot_token = "replace-me"
+
+rackspace_organization_name = "tony"
+cloudspace_name             = "freeproxyapi-dfw"
+region                      = "us-central-dfw-1"
+kubernetes_version          = "1.32.9"
+cni                         = "calico"
+ha_control_plane            = false
+wait_until_ready            = true
+preemption_webhook          = null
+
+server_class  = "mh.vs1.medium-dfw"
+bid_price     = 0.01
+desired_nodes = 4

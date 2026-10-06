@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Live FreeProxyAPI operations: validated proxy pool, validation throughput, pool quality, and traffic.">
+  <meta name="theme-color" content="#071018">
+  <link rel="canonical" href="{{BASE_URL}}/dashboard">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{BASE_URL}}/dashboard">
+  <meta property="og:title" content="FreeProxyAPI — operations dashboard">
+  <meta property="og:description" content="Live validated proxy pool, validation throughput, pool quality, and traffic.">
+  <meta property="og:image" content="{{BASE_URL}}/dashboard/social-share.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="FreeProxyAPI — operations dashboard">
+  <meta name="twitter:description" content="Live validated proxy pool, validation throughput, pool quality, and traffic.">
+  <meta name="twitter:image" content="{{BASE_URL}}/dashboard/social-share.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon.png">
+  <title>FreeProxyAPI — operations dashboard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#071018; --panel:#0d1b27; --panel-2:#102534; --line:#1c3a4c; --text:#e8f1f5; --muted:#91a8b5; --cyan:#65e6d0; --blue:#86b9ff; --warm:#f4bf74; --red:#ff8e8e; --content-gutter:clamp(28px,4.3vw,112px); }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 80% -10%, #15394a 0, transparent 42rem),var(--bg); color:var(--text); font:16px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:inherit; }
+    .shell { width:min(2400px,calc(100% - (var(--content-gutter) * 2))); margin:auto; }
+    .nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 20px; padding:34px 0; }
+    .brand { display:flex; align-items:center; gap:16px; font-size:22px; font-weight:700; letter-spacing:-.03em; text-decoration:none; }
+    .mark { display:block; width:48px; height:48px; border:1px solid #3c887f; border-radius:14px; background:#0d2e35; object-fit:cover; }
+    .nav-links { display:flex; flex-wrap:wrap; gap:4px 34px; color:var(--muted); font-size:20px; }
+    .nav-links a { text-decoration:none; }
+    .nav-links a:hover { color:var(--text); }
+    main { padding:92px 0 96px; }
+    .heading { display:flex; align-items:end; justify-content:space-between; gap:56px; margin-bottom:40px; }
+    .eyebrow { color:var(--cyan); font:600 18px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { margin:22px 0 16px; font-size:clamp(44px,5vw,86px); line-height:.98; letter-spacing:-.07em; }
+    .subtitle { max-width:920px; margin:0; color:var(--muted); font-size:clamp(18px,1.35vw,28px); line-height:1.42; }
+    .controls { display:flex; align-items:center; gap:18px; flex-wrap:wrap; justify-content:flex-end; padding-bottom:2px; }
+    select,button { border:1px solid var(--line); border-radius:13px; padding:14px 18px; background:var(--panel); color:var(--text); font:inherit; font-size:20px; }
+    button { cursor:pointer; }
+    button:hover { border-color:#56cdbc; }
+    button:disabled { cursor:wait; opacity:.55; }
+    :focus-visible { outline:2px solid var(--cyan); outline-offset:3px; }
+    .status { display:inline-flex; align-items:center; gap:12px; color:var(--muted); font-size:19px; white-space:nowrap; }
+    .status:before { width:11px; height:11px; border-radius:50%; background:var(--cyan); content:""; box-shadow:0 0 0 6px #65e6d01c; }
+    .status[data-state="error"]:before { background:var(--red); box-shadow:0 0 0 4px #ff8e8e1c; }
+    .cards { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:22px; }
+    .card,.panel { border:1px solid var(--line); border-radius:22px; background:linear-gradient(145deg,#102534,#0a1822); }
+    .card { min-width:0; min-height:220px; padding:32px; }
+    .card-label { color:var(--muted); font-size:20px; }
+    .card-value { display:block; margin:22px 0 8px; font:600 clamp(32px,2.7vw,62px)/.98 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:-.07em; overflow-wrap:anywhere; }
+    .card-value[data-state="running"] { color:var(--cyan); font-family:inherit; letter-spacing:-.04em; }
+    .card-value[data-state="scheduled"] { max-width:none; font-size:clamp(18px,2.1vw,44px); letter-spacing:-.05em; line-height:1.05; overflow-wrap:normal; text-wrap:balance; }
+    .card-value[data-state="warn"] { color:var(--warm); }
+    .card-detail { display:block; color:var(--muted); font-size:17px; }
+    .schedule-card { display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
+    .schedule-card .card-value { align-self:center; margin-top:16px; margin-bottom:12px; }
+    .section-title { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:40px 0 18px; }
+    .section-title h2 { font-size:28px; }
+    .quality-cards .card { min-height:0; padding:26px 32px; }
+    .quality-cards .card-value { margin:14px 0 6px; font-size:clamp(28px,2.1vw,48px); }
+    .dashboard-grid { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,.65fr); gap:22px; margin-top:22px; }
+    .panel { min-width:0; overflow:hidden; }
+    .panel-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:24px 28px; border-bottom:1px solid var(--line); }
+    h2 { margin:0; font-size:24px; letter-spacing:-.04em; }
+    .panel-note { color:var(--muted); font-size:16px; }
+    .chart-wrap { position:relative; padding:20px 28px 16px; }
+    #trend-chart { display:block; width:100%; height:290px; }
+    .grid-line { stroke:#1c3a4c; stroke-width:1; }
+    .axis-label { fill:#66828e; font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .line-validated { fill:none; stroke:var(--cyan); stroke-width:3; stroke-linecap:round; stroke-linejoin:round; }
+    .line-stable { fill:none; stroke:var(--blue); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 6; }
+    .hover-line { stroke:#91a8b5; stroke-width:1; stroke-dasharray:3 4; }
+    .hover-dot-validated { fill:var(--bg); stroke:var(--cyan); stroke-width:2.5; }
+    .hover-dot-stable { fill:var(--bg); stroke:var(--blue); stroke-width:2; }
+    .chart-tooltip { position:absolute; top:14px; left:0; z-index:1; min-width:170px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:#061017f0; box-shadow:0 12px 28px #02080c99; color:var(--text); font-size:14px; pointer-events:none; }
+    .chart-tooltip time { display:block; margin-bottom:4px; color:var(--muted); font-size:13px; }
+    .chart-tooltip div { display:flex; justify-content:space-between; gap:14px; }
+    .chart-tooltip b { font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .tip-validated { color:var(--cyan); }
+    .tip-stable { color:var(--blue); }
+    .legend { display:flex; gap:24px; padding:0 28px 24px; color:var(--muted); font-size:15px; }
+    .legend span:before { display:inline-block; width:18px; height:3px; margin:0 7px 3px 0; border-radius:3px; background:var(--cyan); content:""; }
+    .legend span + span:before { background:var(--blue); }
+    .rate-list { display:grid; gap:18px; padding:28px; }
+    .rate-row { display:grid; grid-template-columns:1fr auto; gap:12px; align-items:center; }
+    .rate-title { color:var(--muted); font-size:17px; }
+    .rate-value { color:var(--text); font:600 16px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .rate-track { grid-column:1/-1; height:8px; overflow:hidden; border-radius:8px; background:#173040; }
+    .rate-fill { height:100%; width:0; border-radius:inherit; background:var(--cyan); transition:width .3s ease; }
+    .distribution-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px; margin-top:22px; }
+    .details-panel,.traffic-panel { margin-top:22px; }
+    .details { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:0 32px; margin:0; padding:8px 28px 20px; }
+    .detail { min-width:0; padding:16px 0; border-bottom:1px solid #173040; }
+    .detail dt { color:var(--muted); font-size:15px; }
+    .detail dd { margin:0; }
+    .detail .detail-value { margin:4px 0 2px; font:600 22px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:-.04em; overflow-wrap:anywhere; }
+    .detail .detail-note { color:var(--muted); font-size:13px; line-height:1.4; }
+    .traffic-note { padding:18px 28px 0; color:var(--muted); font-size:15px; }
+    .traffic-wrap { overflow-x:auto; padding:16px 28px 28px; }
+    .traffic-table { width:100%; min-width:760px; border-collapse:collapse; font-size:15px; }
+    .traffic-table th { padding:10px 12px; color:var(--muted); font-weight:500; text-align:right; white-space:nowrap; }
+    .traffic-table th:first-child,.traffic-table th:nth-child(2) { text-align:left; }
+    .traffic-table td { padding:13px 12px; border-top:1px solid #173040; text-align:right; font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace; white-space:nowrap; }
+    .traffic-table td:first-child,.traffic-table td:nth-child(2) { text-align:left; font-family:inherit; font-weight:500; }
+    .traffic-table td:first-child { color:var(--muted); }
+    .traffic-table td:nth-child(2) { color:var(--text); }
+    .traffic-unavailable { color:var(--muted) !important; font-family:inherit !important; font-weight:500 !important; }
+    .bucket-list { display:grid; gap:14px; padding:24px 28px 28px; }
+    .bucket-row { display:grid; grid-template-columns:minmax(90px,1fr) 2fr auto; align-items:center; gap:12px; font-size:15px; }
+    .bucket-label { overflow:hidden; color:var(--muted); text-overflow:ellipsis; white-space:nowrap; }
+    .bucket-track { height:9px; overflow:hidden; border-radius:9px; background:#173040; }
+    .bucket-fill { height:100%; border-radius:inherit; background:linear-gradient(90deg,var(--blue),var(--cyan)); }
+    .bucket-value { min-width:4ch; text-align:right; font:600 15px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .empty { padding:28px; color:var(--muted); font-size:15px; }
+    .error { display:none; margin:0 0 24px; border:1px solid #70444a; border-radius:16px; padding:18px 20px; background:#26171d; color:#ffc3c3; }
+    .error[data-visible="true"] { display:block; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+    footer { display:flex; justify-content:space-between; gap:20px; padding:25px 0 42px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    footer a { text-decoration:none; }
+    @media (prefers-reduced-motion:reduce) { .rate-fill { transition:none; } }
+    @media (max-width:1280px) { :root { --content-gutter:40px; } .brand { font-size:18px; } .mark { width:40px; height:40px; border-radius:12px; } .nav-links { gap:4px 22px; font-size:16px; } .heading { gap:32px; } .eyebrow { font-size:14px; } .cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .card { min-height:180px; padding:24px; } .quality-cards .card { padding:22px 24px; } .card-label { font-size:16px; } .card-value { margin-top:16px; } .card-detail { font-size:14px; } select,button { font-size:16px; padding:12px 15px; } .status { font-size:15px; } .section-title h2 { font-size:24px; } }
+    @media (max-width:900px) { main { padding-top:58px; } .heading { display:block; } .controls { justify-content:flex-start; margin-top:28px; } .dashboard-grid { grid-template-columns:minmax(0,1fr); } }
+    @media (max-width:640px) { :root { --content-gutter:14px; } main { padding:36px 0 64px; } .nav { padding:20px 0; } .brand { gap:10px; font-size:16px; } .mark { width:34px; height:34px; border-radius:10px; } .nav-links { gap:4px 12px; font-size:13px; } h1 { font-size:clamp(42px,12vw,64px); } .subtitle { font-size:17px; } .heading { margin-bottom:24px; } .controls { gap:10px; margin-top:20px; } .cards { gap:10px; } .distribution-grid { grid-template-columns:minmax(0,1fr); gap:14px; } .card, .quality-cards .card { min-height:0; padding:16px; border-radius:16px; } .card-label { font-size:14px; } .card-value, .quality-cards .card-value { margin:10px 0 6px; font-size:26px; } .card-value[data-state="scheduled"] { font-size:16px; letter-spacing:-.02em; } .card-detail { font-size:12.5px; line-height:1.35; } .section-title { margin:28px 0 12px; } .section-title h2 { font-size:20px; } .panel-head { padding:18px 20px; } h2 { font-size:20px; } .chart-wrap { padding:14px 12px 10px; } #trend-chart { height:230px; } .legend { padding:0 20px 18px; } .rate-list,.bucket-list { padding:20px; } .details { grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 16px; padding:4px 20px 14px; } .detail { padding:12px 0; } .detail .detail-value { font-size:18px; } .detail .detail-note { font-size:12px; } .traffic-note { padding:14px 20px 0; } .traffic-wrap { padding:12px 20px 20px; } }
+    @media (max-width:430px) { .brand { gap:8px; } .mark { width:30px; height:30px; } .nav-links { gap:4px 10px; font-size:12.5px; } footer { display:block; } footer div + div { margin-top:9px; } }
+  </style>
+</head>
+<body>
+  <header class="shell nav">
+    <a class="brand" href="/"><img class="mark" src="/icon.png" alt="" width="30" height="30" aria-hidden="true"><span>FreeProxyAPI</span></a>
+    <nav class="nav-links" aria-label="Main navigation"><a href="/">Live data</a><a href="/stats">Stats API</a><a href="/dashboard" aria-current="page">Dashboard</a></nav>
+  </header>
+  <main class="shell">
+    <div class="heading">
+      <div><div class="eyebrow">Live operations</div><h1>Operations dashboard.</h1><p class="subtitle">A focused view of inventory health, validation throughput, and the currently available proxy pool.</p></div>
+      <div class="controls"><span class="status" id="status" data-state="loading" role="status">Connecting to live metrics…</span><select id="range" aria-label="Chart time range"><option value="1h">Last hour</option><option value="6h" selected>Last 6 hours</option><option value="24h">Last 24 hours</option></select><button id="refresh" type="button">Refresh</button></div>
+    </div>
+    <div class="error" id="error" role="alert"></div>
+    <section class="cards" aria-label="Headline metrics">
+      <div class="card"><span class="card-label">Validated</span><strong class="card-value" id="validated">—</strong><span class="card-detail">meet listing rules: 3+ checks, 80%+ success</span></div>
+      <div class="card"><span class="card-label">Due now</span><strong class="card-value" id="pending_due">—</strong><span class="card-detail" id="pending-due-detail">retests due for a probe</span></div>
+      <div class="card"><span class="card-label">In-flight probes</span><strong class="card-value" id="inflight_probes">—</strong><span class="card-detail">across all replicas</span></div>
+      <div class="card schedule-card"><span class="card-label">Validation</span><strong class="card-value" id="validation-state" data-state="idle">—</strong><span class="card-detail" id="validation-detail">checking schedule…</span></div>
+    </section>
+    <section aria-labelledby="quality-title">
+      <div class="section-title"><h2 id="quality-title">Pool quality</h2><span class="panel-note" id="quality-note">recent checks</span></div>
+      <div class="cards quality-cards">
+        <div class="card"><span class="card-label">HTTPS pass rate</span><strong class="card-value" id="https-rate">—</strong><span class="card-detail" id="https-detail">last hour</span></div>
+        <div class="card"><span class="card-label">Modified traffic</span><strong class="card-value" id="tamper-rate">—</strong><span class="card-detail" id="tamper-detail">last hour</span></div>
+        <div class="card"><span class="card-label">gost-router replicas</span><strong class="card-value" id="gost-replicas">—</strong><span class="card-detail" id="gost-detail">available / desired</span></div>
+        <div class="card"><span class="card-label">Internal API failures</span><strong class="card-value" id="api-failures">—</strong><span class="card-detail" id="api-detail">last 15 minutes</span></div>
+      </div>
+    </section>
+    <div class="dashboard-grid">
+      <section class="panel"><div class="panel-head"><h2>Validated pool trend</h2><span class="panel-note" id="trend-note">loading…</span></div><div class="chart-wrap" id="chart-wrap"><svg id="trend-chart" viewBox="0 0 800 250" role="img" tabindex="0" aria-label="Validated and stable proxy trend. Use left and right arrow keys to inspect points." aria-describedby="trend-live"></svg><div class="chart-tooltip" id="trend-tooltip" hidden><time id="tip-time"></time><div><span class="tip-validated">Validated</span><b id="tip-validated">—</b></div><div><span class="tip-stable">Stable</span><b id="tip-stable">—</b></div></div><span class="sr-only" id="trend-live" aria-live="polite"></span></div><div class="legend"><span>Validated</span><span>Stable</span></div></section>
+      <section class="panel"><div class="panel-head"><h2>Activity rate</h2><span class="panel-note">15-minute rate</span></div><div class="rate-list" id="rates"></div></section>
+    </div>
+    <div class="distribution-grid">
+      <section class="panel"><div class="panel-head"><h2>Validated by country</h2><span class="panel-note">top 12</span></div><div class="bucket-list" id="country"></div></section>
+      <section class="panel"><div class="panel-head"><h2>Latency bands</h2><span class="panel-note">validated pool</span></div><div class="bucket-list" id="latency_band"></div></section>
+      <section class="panel"><div class="panel-head"><h2>Anonymity classes</h2><span class="panel-note">validated pool</span></div><div class="bucket-list" id="anonymity"></div></section>
+      <section class="panel"><div class="panel-head"><h2>Validated by ASN</h2><span class="panel-note">top 12</span></div><div class="bucket-list" id="asn"></div></section>
+    </div>
+    <section class="panel details-panel">
+      <div class="panel-head"><h2>Inventory details</h2><span class="panel-note">current values</span></div>
+      <dl class="details">
+        <div class="detail"><dt>Scheduled retests</dt><dd class="detail-value" id="pending">—</dd><dd class="detail-note">candidates waiting for their next scheduled check, not a backlog</dd></div>
+        <div class="detail"><dt>Stable</dt><dd class="detail-value" id="stable">—</dd><dd class="detail-note">at least 80% success ratio</dd></div>
+        <div class="detail"><dt>Candidates</dt><dd class="detail-value" id="candidates">—</dd><dd class="detail-note">known to the audit set</dd></div>
+        <div class="detail"><dt>Source total</dt><dd class="detail-value" id="source_unique">—</dd><dd class="detail-note">unique in latest source rescan</dd></div>
+        <div class="detail"><dt>Parsed records</dt><dd class="detail-value" id="source_records_parsed">—</dd><dd class="detail-note">valid records in latest source rescan</dd></div>
+        <div class="detail"><dt>Sources succeeded</dt><dd class="detail-value" id="sources_succeeded">—</dd><dd class="detail-note">feeds in latest source rescan</dd></div>
+        <div class="detail"><dt>Leased</dt><dd class="detail-value" id="leased">—</dd><dd class="detail-note">currently claimed</dd></div>
+        <div class="detail"><dt>GeoIP</dt><dd class="detail-value" id="geoip_enabled">—</dd><dd class="detail-note">database annotation status</dd></div>
+        <div class="detail"><dt>Country mismatches</dt><dd class="detail-value" id="validated_geo_mismatch">—</dd><dd class="detail-note">exit differs from entry</dd></div>
+        <div class="detail"><dt>Processed records</dt><dd class="detail-value" id="processed_records">—</dd><dd class="detail-note">aggregate processed proxies in retained history</dd></div>
+        <div class="detail"><dt>Validation attempts</dt><dd class="detail-value" id="validation_attempts">—</dd><dd class="detail-note">probe results in retained history</dd></div>
+      </dl>
+    </section>
+    <section class="panel traffic-panel">
+      <div class="panel-head"><h2>Traffic volume and throughput</h2><span class="panel-note">bytes, UTC windows</span></div>
+      <div class="traffic-note">Per second is the current 5-minute rate. Totals use retained metrics history; GOST router traffic is measured at the pod network and includes its refresh sidecar and control traffic.</div>
+      <div class="traffic-wrap" tabindex="0" role="region" aria-label="Traffic volume table"><table class="traffic-table"><thead><tr><th scope="col">Source</th><th scope="col">Direction</th><th scope="col">Per second</th><th scope="col">Day</th><th scope="col">Week</th><th scope="col">Month</th><th scope="col">Total retained</th></tr></thead><tbody id="traffic"></tbody></table></div>
+    </section>
+  </main>
+  <footer class="shell"><div>FreeProxyAPI · aggregate operational metrics</div><div><a href="/">Homepage</a> · <a href="/stats">Stats API</a></div></footer>
+  <div class="shell" style="padding:0 0 28px;color:var(--muted);font-size:13px">{{GEOIP_ATTRIBUTION}}</div>
+  <script>
+    const nf = new Intl.NumberFormat();
+    const pf = new Intl.NumberFormat(undefined, { style:'percent', maximumFractionDigits:1 });
+    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const dateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle:'medium', timeStyle:'short', timeZone: browserTimeZone });
+    const timeFormatter = new Intl.DateTimeFormat(undefined, { timeStyle:'medium', timeZone: browserTimeZone });
+    const axisTimeFormatter = new Intl.DateTimeFormat(undefined, { hour:'numeric', minute:'2-digit', timeZone: browserTimeZone });
+    const tipTimeFormatter = new Intl.DateTimeFormat(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZone: browserTimeZone });
+    const rateNames = [['probe_results_ok', 'Successful probes'], ['probe_results_failed', 'Failed probes'], ['source_refreshes_ok', 'Source refreshes'], ['source_records_added', 'Records accepted'], ['source_records_rejected', 'Records rejected'], ['source_fetch_failures', 'Source fetch failures'], ['source_fetch_failures_by_reason_timeout', 'Source feed timeouts'], ['source_fetch_retries', 'Source fetch retries'], ['source_fetch_recovered', 'Feeds recovered on retry'], ['claims', 'Claims'], ['budget_denials', 'Budget denials'], ['lease_reclaims', 'Lease reclaims'], ['result_conflicts', 'Result conflicts'], ['candidates_evicted', 'Evictions']];
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    let loading = false;
+    function text(id, value) { document.getElementById(id).textContent = value; }
+    function finite(value) { if (value === null || value === undefined || value === '') return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
+    function number(value) { return Number.isFinite(value) ? nf.format(Math.round(value)) : '—'; }
+    function timestamp(value, formatter) {
+      if (value === null || value === undefined || value === '') return '—';
+      const date = new Date(value); if (Number.isNaN(date.getTime())) return '—';
+      return formatter.format(date);
+    }
+    function validationTime(value) { return timestamp(value, dateTimeFormatter); }
+    function rate(value) { return Number.isFinite(value) ? value.toFixed(value < 1 ? 2 : 1) + '/s' : '—'; }
+    function duration(seconds) {
+      if (seconds < 60) return Math.max(0, Math.round(seconds)) + ' s';
+      if (seconds < 3600) return Math.round(seconds / 60) + ' min';
+      return (seconds / 3600).toFixed(seconds < 36000 ? 1 : 0) + ' h';
+    }
+    function bytes(value, perSecond) {
+      if (!Number.isFinite(value)) return '—';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB']; let amount = Math.max(0, value); let unit = 0;
+      while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit++; }
+      const precision = amount >= 100 ? 0 : amount >= 10 ? 1 : 2;
+      return amount.toFixed(precision) + ' ' + units[unit] + (perSecond ? '/s' : '');
+    }
+    function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+    function svgNode(name, attributes) { const node = document.createElementNS(SVG_NS, name); for (const [key, value] of Object.entries(attributes || {})) node.setAttribute(key, value); return node; }
+    function setCard(id, value, state) { const node = document.getElementById(id); node.textContent = value; if (state) node.dataset.state = state; else delete node.dataset.state; }
+    function renderRates(values) {
+      const root = document.getElementById('rates'); clear(root);
+      const maximum = Math.max(1, ...rateNames.map(([key]) => Number(values[key] || 0)));
+      for (const [key, label] of rateNames) {
+        const value = Number(values[key] || 0);
+        const row = document.createElement('div'); row.className = 'rate-row';
+        const title = document.createElement('span'); title.className = 'rate-title'; title.textContent = label;
+        const output = document.createElement('span'); output.className = 'rate-value'; output.textContent = rate(value);
+        const track = document.createElement('div'); track.className = 'rate-track';
+        const fill = document.createElement('div'); fill.className = 'rate-fill'; fill.style.width = Math.min(100, value / maximum * 100) + '%'; track.appendChild(fill);
+        row.append(title, output, track); root.appendChild(row);
+      }
+    }
+    function renderBuckets(id, buckets) {
+      const root = document.getElementById(id); clear(root);
+      if (!buckets || !buckets.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = 'No data in the selected range.'; root.appendChild(empty); return; }
+      const maximum = Math.max(1, ...buckets.map(bucket => Number(bucket.value || 0)));
+      for (const bucket of buckets) {
+        const row = document.createElement('div'); row.className = 'bucket-row';
+        const label = document.createElement('span'); label.className = 'bucket-label'; label.title = bucket.label; label.textContent = bucket.label;
+        const track = document.createElement('div'); track.className = 'bucket-track';
+        const fill = document.createElement('div'); fill.className = 'bucket-fill'; fill.style.width = Math.max(2, Number(bucket.value || 0) / maximum * 100) + '%'; track.appendChild(fill);
+        const value = document.createElement('span'); value.className = 'bucket-value'; value.textContent = number(Number(bucket.value || 0));
+        row.append(label, track, value); root.appendChild(row);
+      }
+    }
+
+    // Trend chart: the viewBox tracks the rendered size so labels stay legible at every width.
+    const chart = { trends: null, points: [], index: -1, hovering: false, layout: null };
+    const trendSvg = document.getElementById('trend-chart');
+    const tooltip = document.getElementById('trend-tooltip');
+    function renderTrend(trends) {
+      chart.trends = trends;
+      const previousTime = chart.index >= 0 && chart.points[chart.index] ? chart.points[chart.index].time : null;
+      clear(trendSvg);
+      const width = Math.max(280, Math.round(trendSvg.clientWidth || 800)), height = Math.max(180, Math.round(trendSvg.clientHeight || 250));
+      trendSvg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+      const byTime = new Map();
+      const entry = time => { if (!byTime.has(time)) byTime.set(time, { time, validated: null, stable: null }); return byTime.get(time); };
+      for (const point of (trends && trends.validated) || []) if (Number.isFinite(Number(point.time))) entry(Number(point.time)).validated = finite(point.value);
+      for (const point of (trends && trends.stable) || []) if (Number.isFinite(Number(point.time))) entry(Number(point.time)).stable = finite(point.value);
+      chart.points = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+      if (!chart.points.length) {
+        chart.index = -1; hideTooltip();
+        const label = svgNode('text', { x: width / 2, y: height / 2, 'text-anchor': 'middle', class: 'axis-label' }); label.textContent = 'No historical samples yet'; trendSvg.appendChild(label); return;
+      }
+      const left = 52, right = 14, top = 14, bottom = 30;
+      const plotWidth = width - left - right, plotHeight = height - top - bottom;
+      const minTime = chart.points[0].time, maxTime = chart.points[chart.points.length - 1].time;
+      const maxValue = Math.max(1, ...chart.points.map(point => Math.max(point.validated || 0, point.stable || 0)));
+      const x = time => left + (maxTime === minTime ? plotWidth / 2 : (time - minTime) / (maxTime - minTime) * plotWidth);
+      const y = value => top + plotHeight - value / maxValue * plotHeight;
+      chart.layout = { left, top, plotWidth, plotHeight, x, y };
+      for (let i = 0; i <= 4; i++) {
+        const lineY = top + plotHeight - i * plotHeight / 4;
+        trendSvg.appendChild(svgNode('line', { x1: left, x2: left + plotWidth, y1: lineY, y2: lineY, class: 'grid-line' }));
+        const label = svgNode('text', { x: left - 8, y: lineY + 4, 'text-anchor': 'end', class: 'axis-label' }); label.textContent = number(maxValue * i / 4); trendSvg.appendChild(label);
+      }
+      const ticks = maxTime === minTime ? [[minTime, 'middle']] : [[minTime, 'start'], [minTime + (maxTime - minTime) / 2, 'middle'], [maxTime, 'end']];
+      for (const [time, anchor] of ticks) { const label = svgNode('text', { x: x(time), y: height - 8, 'text-anchor': anchor, class: 'axis-label' }); label.textContent = axisTimeFormatter.format(new Date(time * 1000)); trendSvg.appendChild(label); }
+      for (const [key, className] of [['validated', 'line-validated'], ['stable', 'line-stable']]) {
+        const series = chart.points.filter(point => point[key] !== null);
+        if (!series.length) continue;
+        const d = series.map((point, index) => (index ? 'L' : 'M') + x(point.time).toFixed(1) + ' ' + y(point[key]).toFixed(1)).join(' ');
+        trendSvg.appendChild(svgNode('path', { d, class: className }));
+      }
+      const hover = svgNode('g', { id: 'trend-hover', visibility: 'hidden', 'aria-hidden': 'true' });
+      hover.append(svgNode('line', { id: 'hover-line', y1: top, y2: top + plotHeight, class: 'hover-line' }), svgNode('circle', { id: 'hover-stable', r: 4, class: 'hover-dot-stable' }), svgNode('circle', { id: 'hover-validated', r: 5, class: 'hover-dot-validated' }));
+      trendSvg.appendChild(hover);
+      trendSvg.appendChild(svgNode('rect', { x: left, y: 0, width: plotWidth, height, fill: 'transparent' }));
+      if (previousTime !== null && (chart.hovering || document.activeElement === trendSvg)) showPoint(nearestIndex(previousTime), false);
+      else { chart.index = -1; hideTooltip(); }
+    }
+    function nearestIndex(time) {
+      let best = 0;
+      for (let i = 1; i < chart.points.length; i++) if (Math.abs(chart.points[i].time - time) < Math.abs(chart.points[best].time - time)) best = i;
+      return best;
+    }
+    function hideTooltip() { tooltip.hidden = true; const hover = document.getElementById('trend-hover'); if (hover) hover.setAttribute('visibility', 'hidden'); }
+    function showPoint(index, announce) {
+      if (!chart.points.length || !chart.layout) return;
+      chart.index = Math.max(0, Math.min(chart.points.length - 1, index));
+      const point = chart.points[chart.index], layout = chart.layout, px = layout.x(point.time);
+      const hover = document.getElementById('trend-hover'); hover.setAttribute('visibility', 'visible');
+      const line = document.getElementById('hover-line'); line.setAttribute('x1', px); line.setAttribute('x2', px);
+      for (const key of ['validated', 'stable']) {
+        const dot = document.getElementById('hover-' + key);
+        if (point[key] === null) dot.setAttribute('visibility', 'hidden');
+        else { dot.setAttribute('visibility', 'visible'); dot.setAttribute('cx', px); dot.setAttribute('cy', layout.y(point[key])); }
+      }
+      const when = tipTimeFormatter.format(new Date(point.time * 1000));
+      const tipTime = document.getElementById('tip-time'); tipTime.textContent = when; tipTime.dateTime = new Date(point.time * 1000).toISOString();
+      text('tip-validated', number(point.validated === null ? NaN : point.validated));
+      text('tip-stable', number(point.stable === null ? NaN : point.stable));
+      tooltip.hidden = false;
+      const wrap = document.getElementById('chart-wrap');
+      const svgBox = trendSvg.getBoundingClientRect(), wrapBox = wrap.getBoundingClientRect();
+      const viewWidth = Number(trendSvg.viewBox.baseVal.width) || svgBox.width;
+      const anchorX = svgBox.left - wrapBox.left + px * (svgBox.width / viewWidth);
+      const tipWidth = tooltip.offsetWidth;
+      const leftSide = anchorX + 14 + tipWidth <= wrapBox.width ? anchorX + 14 : anchorX - 14 - tipWidth;
+      tooltip.style.left = Math.max(4, Math.min(wrapBox.width - tipWidth - 4, leftSide)) + 'px';
+      if (announce) text('trend-live', when + ': validated ' + text2(point.validated) + ', stable ' + text2(point.stable) + '.');
+    }
+    function text2(value) { return value === null ? 'no sample' : nf.format(Math.round(value)); }
+    function pointerIndex(event) {
+      if (!chart.layout || !chart.points.length) return -1;
+      const box = trendSvg.getBoundingClientRect(), viewWidth = Number(trendSvg.viewBox.baseVal.width) || box.width;
+      const svgX = (event.clientX - box.left) * (viewWidth / box.width);
+      const first = chart.points[0].time, last = chart.points[chart.points.length - 1].time;
+      const ratio = Math.max(0, Math.min(1, (svgX - chart.layout.left) / chart.layout.plotWidth));
+      return nearestIndex(first + ratio * (last - first));
+    }
+    trendSvg.addEventListener('pointermove', event => { const index = pointerIndex(event); if (index < 0) return; chart.hovering = true; if (index !== chart.index || tooltip.hidden) showPoint(index, false); });
+    trendSvg.addEventListener('pointerleave', () => { chart.hovering = false; if (document.activeElement !== trendSvg) { chart.index = -1; hideTooltip(); } });
+    trendSvg.addEventListener('focus', () => { if (chart.points.length) showPoint(chart.index >= 0 ? chart.index : chart.points.length - 1, true); });
+    trendSvg.addEventListener('blur', () => { if (!chart.hovering) { chart.index = -1; hideTooltip(); } });
+    trendSvg.addEventListener('keydown', event => {
+      if (!chart.points.length) return;
+      const current = chart.index >= 0 ? chart.index : chart.points.length - 1;
+      const step = Math.max(1, Math.round(chart.points.length / 20));
+      const moves = { ArrowLeft: current - 1, ArrowRight: current + 1, PageDown: current - step, PageUp: current + step, Home: 0, End: chart.points.length - 1 };
+      if (event.key === 'Escape') { hideTooltip(); return; }
+      if (!(event.key in moves)) return;
+      event.preventDefault(); showPoint(moves[event.key], true);
+    });
+    let resizeTimer;
+    window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (chart.trends) renderTrend(chart.trends); }, 120); });
+
+    function renderTraffic(traffic) {
+      const root = document.getElementById('traffic'); clear(root);
+      const rows = [['validation', 'Upload', traffic && traffic.validation && traffic.validation.upload], ['validation', 'Download', traffic && traffic.validation && traffic.validation.download], ['gost', 'Upload', traffic && traffic.gost && traffic.gost.upload], ['gost', 'Download', traffic && traffic.gost && traffic.gost.download]];
+      for (const [source, direction, summary] of rows) {
+        const row = document.createElement('tr'); const sourceCell = document.createElement('td'); sourceCell.textContent = source === 'gost' ? 'GOST router' : 'Validation probes';
+        const directionCell = document.createElement('td'); directionCell.textContent = direction;
+        row.append(sourceCell, directionCell);
+        if (!summary || !summary.available) { const empty = document.createElement('td'); empty.colSpan = 5; empty.className = 'traffic-unavailable'; empty.textContent = 'No retained samples yet'; row.appendChild(empty); }
+        else { for (const [key, perSecond] of [['per_second', true], ['day', false], ['week', false], ['month', false], ['total', false]]) { const cell = document.createElement('td'); cell.textContent = bytes(Number(summary[key]), perSecond); row.appendChild(cell); } }
+        root.appendChild(row);
+      }
+    }
+    function renderValidation(validation) {
+      const state = validation && validation.state || 'idle';
+      const value = document.getElementById('validation-state'); value.dataset.state = state;
+      if (state === 'running') {
+        value.textContent = 'Running';
+        text('validation-detail', number(Number(validation.in_flight || 0)) + ' probes currently claimed');
+      } else if (state === 'scheduled') {
+        value.textContent = validationTime(validation.next_at);
+        text('validation-detail', 'next probe due · local time');
+      } else if (state === 'due') {
+        value.textContent = 'Due now';
+        text('validation-detail', 'waiting for an available worker');
+      } else {
+        value.textContent = 'Idle';
+        text('validation-detail', 'no validation work is scheduled');
+      }
+    }
+    function renderPending(current) {
+      const due = finite(current.pending_due), scheduled = finite(current.pending), nextIn = finite(current.pending_next_due_in_seconds);
+      text('pending_due', due === null ? '—' : number(due));
+      const parts = [];
+      if (scheduled !== null) parts.push('of ' + number(scheduled) + ' scheduled');
+      if (due === 0 && nextIn !== null && nextIn > 0) parts.push('next in ' + duration(nextIn));
+      text('pending-due-detail', parts.length ? parts.join(' · ') : 'retests due for a probe');
+    }
+    function renderHealth(health) {
+      const h = health && typeof health === 'object' ? health : {};
+      const httpsChecks = finite(h.https_checks_1h); let httpsRate = finite(h.https_pass_rate_1h);
+      // https_pass_rate_1h is a percentage (0-100); pf formats a 0-1 fraction.
+      if (httpsRate !== null) httpsRate /= 100;
+      if (httpsChecks === 0) { setCard('https-rate', '—'); text('https-detail', 'no HTTPS checks in the last hour'); }
+      else { setCard('https-rate', httpsRate === null ? '—' : pf.format(httpsRate)); text('https-detail', httpsChecks === null ? (httpsRate === null ? 'not reported yet' : 'last hour') : 'last hour · ' + number(httpsChecks) + ' checks'); }
+      const tamperChecks = finite(h.tamper_checks_1h), tampered = finite(h.tampered_1h);
+      if (tamperChecks === null || tampered === null) { setCard('tamper-rate', '—'); text('tamper-detail', 'not reported yet'); }
+      else if (tamperChecks === 0) { setCard('tamper-rate', '—'); text('tamper-detail', 'no tamper checks in the last hour'); }
+      else { setCard('tamper-rate', pf.format(tampered / tamperChecks)); text('tamper-detail', number(tampered) + ' of ' + number(tamperChecks) + ' checks · last hour'); }
+      const available = finite(h.gost_router_available), desired = finite(h.gost_router_desired);
+      if (available === null || desired === null) { setCard('gost-replicas', '—'); text('gost-detail', 'not reported yet'); }
+      else { setCard('gost-replicas', number(available) + ' / ' + number(desired), available < desired ? 'warn' : ''); text('gost-detail', available < desired ? 'available / desired · degraded' : 'available / desired'); }
+      const failures = finite(h.internal_api_failures_15m);
+      if (failures === null) { setCard('api-failures', '—'); text('api-detail', 'not reported yet'); }
+      else { setCard('api-failures', number(failures), failures > 0 ? 'warn' : ''); text('api-detail', 'last 15 minutes'); }
+    }
+    function render(data) {
+      const current = data.current || {};
+      for (const id of ['validated', 'stable', 'pending', 'inflight_probes', 'candidates', 'source_unique', 'source_records_parsed', 'sources_succeeded', 'leased', 'validated_geo_mismatch']) text(id, number(Number(current[id])));
+      text('processed_records', number(Number(data.totals && data.totals.processed_records)));
+      text('validation_attempts', number(Number(data.totals && data.totals.validation_attempts)));
+      text('geoip_enabled', current.geoip_enabled === undefined || current.geoip_enabled === null ? '—' : Number(current.geoip_enabled) === 1 ? 'Ready' : 'Off');
+      renderPending(current); renderHealth(data.health);
+      renderValidation(data.validation || {}); renderRates(data.rates || {}); renderTrend(data.trends || {}); renderTraffic(data.traffic || {});
+      for (const id of ['country', 'latency_band', 'anonymity', 'asn']) renderBuckets(id, data.distributions && data.distributions[id]);
+      text('trend-note', (data.range || '6h') + ' · updated ' + timestamp(data.checked_at, timeFormatter));
+    }
+    async function load() {
+      if (loading) return; loading = true; document.getElementById('refresh').disabled = true;
+      const status = document.getElementById('status'), error = document.getElementById('error'); status.dataset.state = 'loading'; status.textContent = 'Refreshing live metrics…'; error.dataset.visible = 'false';
+      const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 12000);
+      try {
+        const range = document.getElementById('range').value, response = await fetch('/dashboard/data?range=' + encodeURIComponent(range), { headers: { accept: 'application/json' }, signal: controller.signal });
+        // An edge error page is not JSON; never surface the parser message.
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !['ok', 'degraded'].includes(data.status)) throw new Error(data.error || 'Live metrics are unavailable right now. Retrying on the next refresh.');
+        render(data);
+        if (data.status === 'degraded' || data.stale) {
+          status.dataset.state = 'error'; status.textContent = 'Showing stale data';
+          error.textContent = 'Live metrics are unavailable; showing the last successful snapshot from ' + timestamp(data.checked_at, timeFormatter) + '.'; error.dataset.visible = 'true';
+        } else {
+          status.dataset.state = 'ready'; status.textContent = 'Live metrics connected';
+        }
+      } catch (err) { status.dataset.state = 'error'; status.textContent = 'Live metrics unavailable'; error.textContent = err.name === 'AbortError' ? 'The metrics query timed out. Retrying on the next refresh.' : err.message; error.dataset.visible = 'true'; }
+      finally { clearTimeout(timeout); loading = false; lastLoadAt = Date.now(); document.getElementById('refresh').disabled = false; }
+    }
+    const refreshInterval = 30000; let lastLoadAt = 0;
+    document.getElementById('refresh').addEventListener('click', load); document.getElementById('range').addEventListener('change', load); load();
+    // Hidden tabs stop polling; returning to the tab refreshes if the data is overdue.
+    setInterval(() => { if (!document.hidden) load(); }, refreshInterval);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastLoadAt >= refreshInterval) load(); });
+  </script>
+  <!--analytics:begin-->
+  <script>
+    (() => {
+      const measurementId = '{{MEASUREMENT_ID}}';
+      window.dataLayer = window.dataLayer || [];
+      function gtag() { window.dataLayer.push(arguments); }
+      window.gtag = window.gtag || gtag;
+      gtag('js', new Date());
+      gtag('config', measurementId);
+      let activated = false;
+      const activate = () => {
+        if (activated) return;
+        activated = true;
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
+        document.head.appendChild(script);
+      };
+      ['pointerdown', 'click', 'touchstart', 'keydown', 'scroll'].forEach(eventName => window.addEventListener(eventName, activate, { once: true, passive: true }));
+      window.addEventListener('load', () => setTimeout(activate, 3500), { once: true });
+    })();
+  </script>
+  <!--analytics:end-->
+</body>
+</html>

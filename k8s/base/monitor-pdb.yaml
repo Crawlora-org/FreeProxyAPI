@@ -1,0 +1,24 @@
+# Limits voluntary disruptions (node drains, cluster upgrades) of the monitor
+# replicas. A drain evicts at most 25% of the pool at a time; the rest keep
+# probing and serving the API. Involuntary loss such as spot preemption is
+# not covered by PodDisruptionBudgets.
+#
+# The component label is required: cloudflared pods also carry
+# app.kubernetes.io/name=freeproxyapi, and a pod matched by more than one
+# PDB cannot be evicted.
+#
+# Single-replica workloads (freeproxyapi-redis, cloudflared) intentionally
+# have no PDB: minAvailable 1 would block every node drain, and
+# maxUnavailable 1 would not limit anything. gost-router runs two replicas and
+# carries its own PDB in k8s/overlays/gost-router.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: freeproxyapi-monitor
+  namespace: freeproxyapi
+spec:
+  maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: freeproxyapi
+      app.kubernetes.io/component: monitor

@@ -1,0 +1,225 @@
+# FreeProxyAPI alerting rules (single source of truth).
+#
+# Applied by `kubectl apply -k k8s/overlays/monitoring` (Prometheus Operator
+# CRD required). Without the operator, copy spec.groups into your own rule
+# file. Recording rules are intentionally not included; every expression reads
+# freeproxyapi_* (and kube-state-metrics/cAdvisor) metrics directly.
+#
+# Requires a scrape of the freeproxyapi Service (port 8080, /metrics).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: freeproxyapi-alerts
+  labels:
+    app.kubernetes.io/name: freeproxyapi
+spec:
+  groups:
+    - name: freeproxyapi.availability
+      rules:
+        - alert: RelayAuditValidatedCountDropped
+          expr: |
+            (
+              max(freeproxyapi_validated)
+              < 0.5 * max_over_time(max(freeproxyapi_validated)[6h:5m])
+            )
+            and
+            (max(freeproxyapi_validated) > 10)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Relay audit validated count dropped by more than half"
+            description: "Validated count is {{ $value }} vs its 6h peak. Either the alive tail is dying off, probes are failing en masse, or the validated-set bookkeeping regressed."
+
+        - alert: RelayAuditNoSuccessfulProbes
+          expr: |
+            sum(increase(freeproxyapi_probe_results_total{outcome="ok"}[30m])) == 0
+            and
+            sum(increase(freeproxyapi_claims_total[30m])) > 20
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No successful probe outcomes in 30m despite active claiming"
+            description: "Workers claim and complete probes but none succeed. Could be a dead inventory, a broken egress path, or a probe-logic regression."
+
+        - alert: RelayAuditAllSourcesFailing
+          expr: |
+            sum(increase(freeproxyapi_source_refreshes_total{result="error"}[1h]))
+            >= 2 * clamp_min(sum(increase(freeproxyapi_source_refreshes_total{result="ok"}[1h])), 1)
+            and sum(increase(freeproxyapi_source_fetch_failures_total[1h])) > 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Source refreshes mostly failing for an hour"
+            description: "Inventory refresh error rate dominates. Check pod logs for 'source fetch failed source=' lines; feeds may have died or moved."
+
+        - alert: RelayAuditSourceFetchFailures
+          expr: sum(increase(freeproxyapi_source_fetch_failures_by_reason_total[1h])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Source feeds are failing"
+            description: "One or more configured source feeds failed during the last hour. Inspect the reason breakdown and the bounded per-source failure counter; individual source URLs are intentionally not exposed here."
+
+        - alert: RelayAuditSourceFetchTimeouts
+          expr: sum(increase(freeproxyapi_source_fetch_failures_by_reason_total{reason="timeout"}[1h])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Source feed timeouts detected"
+            description: "At least one source feed timed out during the last hour. Check source timeout pressure, retry recovery, and the source refresh interval before changing proxy validation timeouts."
+
+        - alert: RelayAuditInternalAPIQueryFailures
+          # gost-router queries about once a minute per replica, so a real
+          # outage crosses 5 quickly; a single failure during a monitor
+          # rollout does not page.
+          expr: sum(increase(freeproxyapi_internal_api_query_failures_total[15m])) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Internal proxy API is returning 503 for failed queries"
+            description: "{{ $value }} internal API queries failed in the last 15m. gost-router cannot refresh its upstreams while this persists. Check monitor pod logs for 'internal proxy query failed' lines and Redis health."
+
+        - alert: RelayAuditHTTPSPassRateCollapsed
+          expr: |
+            (
+              100 * sum(increase(freeproxyapi_https_probe_results_total{outcome="ok"}[1h]))
+              / sum(increase(freeproxyapi_https_probe_results_total[1h]))
+            ) < 2
+            and
+            sum(increase(freeproxyapi_https_probe_results_total[1h])) > 100
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HTTPS spot-check pass rate below 2% over 1h"
+            description: "Only {{ $value }}% of more than 100 sampled HTTPS checks passed in the last hour. Either the HTTPS check target is unreachable, the TLS probe path regressed, or validated proxies no longer carry HTTPS."
+
+    - name: freeproxyapi.gost-router
+      rules:
+        - alert: RelayAuditGostRouterRestarts
+          expr: |
+            sum(increase(kube_pod_container_status_restarts_total{namespace="freeproxyapi",pod=~"gost-router-.*"}[15m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "gost-router containers restarted"
+            description: "One or more gost-router containers (proxy-router or gost) restarted in the last 15m. Check the termination reason and proxy-router logs; a failing internal API can keep new Pods from becoming ready."
+
+        - alert: RelayAuditGostRouterUnavailable
+          expr: |
+            max(kube_deployment_status_replicas_available{namespace="freeproxyapi",deployment="gost-router"}) < 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "gost-router has no available replicas"
+            description: "No gost-router Pod is ready, so the proxy listeners on ports 3128/3129 are down. Check proxy-router logs for failed internal API syncs and the gost container probes."
+
+        - alert: RelayAuditGostRouterDegraded
+          expr: |
+            max(kube_deployment_status_replicas_available{namespace="freeproxyapi",deployment="gost-router"}) < 2
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "gost-router running with fewer than 2 available replicas"
+            description: "Only {{ $value }} gost-router replica has been available for 30m. The proxy listeners are still up but have no redundancy; check for a Pod stuck waiting on its first sync or left unschedulable."
+
+    - name: freeproxyapi.capacity
+      rules:
+        - alert: RelayAuditBudgetSustainedDenials
+          expr: sum(increase(freeproxyapi_budget_denials_total[15m])) > 100
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "Global request budget denying sustained probe volume"
+            description: "The Redis-wide per-minute budget is saturated. If inventory growth is real, raise global_requests_per_minute or add replicas."
+
+        - alert: RelayAuditLeaseReclaimsSpike
+          expr: sum(increase(freeproxyapi_lease_reclaims_total[15m])) > 50
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Lease reclaims spiking - workers dying mid-probe"
+            description: "Expired leases are being reclaimed in volume. Usually OOM-kills, node preemption, or crash loops on monitor pods."
+
+        - alert: RelayAuditPendingQueueIdle
+          expr: |
+            max(freeproxyapi_pending) > 1000
+            and max(freeproxyapi_pending_due) == 0
+            and max(freeproxyapi_inflight_probes) == 0
+            and max(freeproxyapi_pending_next_due_in_seconds) < 3600
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "Pending queue has no immediately due work"
+            description: "The pending queue is populated but no candidates are due and no probes are in flight. Check retest scheduling, source refreshes, and queue timing."
+
+        - alert: RelayAuditMonitorCPUHigh
+          expr: |
+            100 *
+            sum(rate(container_cpu_usage_seconds_total{namespace="freeproxyapi",container="freeproxyapi"}[5m]))
+            /
+            sum(kube_pod_container_resource_limits{namespace="freeproxyapi",container="freeproxyapi",resource="cpu",unit="core"})
+            > 80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "FreeProxyAPI monitor CPU usage is high"
+            description: "Monitor containers are using more than 80% of their configured CPU limit for 15m. Reduce concurrency or add capacity before increasing source volume."
+
+        - alert: RelayAuditMonitorMemoryHigh
+          expr: |
+            100 *
+            sum(container_memory_working_set_bytes{namespace="freeproxyapi",container="freeproxyapi"})
+            /
+            sum(kube_pod_container_resource_limits{namespace="freeproxyapi",container="freeproxyapi",resource="memory",unit="byte"})
+            > 80
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "FreeProxyAPI monitor memory usage is high"
+            description: "Monitor containers are using more than 80% of their configured memory limit for 15m. Check concurrency, probe response sizes, and OOM risk."
+
+        - alert: RelayAuditMonitorRestarts
+          expr: |
+            sum(increase(kube_pod_container_status_restarts_total{namespace="freeproxyapi",container="freeproxyapi"}[15m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "FreeProxyAPI monitor containers restarted"
+            description: "One or more monitor containers restarted in the last 15m. Check pod termination reason, memory pressure, and node events."
+
+    - name: freeproxyapi.enrichment
+      rules:
+        - alert: RelayAuditGeoIPDisabled
+          expr: max(freeproxyapi_geoip_enabled) == 0
+          for: 30m
+          labels:
+            severity: info
+          annotations:
+            summary: "GeoIP annotation disabled"
+            description: "Country/ASN slicing is blind. The init container failed to fetch the mmdb or geoip_db_path is unset."
+
+        - alert: RelayAuditTooManyUnknownCountries
+          expr: max(freeproxyapi_validated_by_country{country="unknown"}) > 50
+          for: 30m
+          labels:
+            severity: info
+            severity_comment: "informational unless GeoIP was expected"
+          annotations:
+            summary: "Many validated candidates lack country data"
+            description: "Either the DB went stale/missing mid-run or hostname-based candidates dominate. Completion-time annotation will fill them on later cycles."

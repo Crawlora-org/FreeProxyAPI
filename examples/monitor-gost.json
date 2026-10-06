@@ -1,0 +1,24 @@
+{
+  "redis_url": "redis://redis:6379/0",
+  "namespace": "freeproxyapi:gost",
+  "sources": [
+    "file:///data/proxies.txt"
+  ],
+  "default_proxy_scheme": "http",
+  "network_validation_enabled": true,
+  "probe_target": "https://www.google.com/generate_204",
+  "listen_addr": ":8080",
+  "fetch_interval": "15m",
+  "request_timeout": "10s",
+  "source_request_timeout": "10s",
+  "validated_retest_interval": "6h",
+  "failed_retest_interval": "48h",
+  "max_consecutive_failures": 10,
+  "geoip_db_path": "/geoip/GeoLite2-Country.mmdb",
+  "geoip_asn_db_path": "/geoip/GeoLite2-ASN.mmdb",
+  "internal_api_token_file": "/run/secrets/freeproxyapi-internal-api-token",
+  "lease_ttl": "30s",
+  "source_max_bytes": 10485760,
+  "workers": 4,
+  "global_requests_per_minute": 60
+}

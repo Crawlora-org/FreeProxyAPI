@@ -1,0 +1,24 @@
+# Live production overlay. Merges the operator's monitor
+# configuration -- including the real, reviewed inventory source list -- into
+# the generated ConfigMap at apply time.
+#
+# Do not apply this overlay by hand. The deploy-live job in
+# .github/workflows/docker-publish.yml renders it (via live-ci) and applies it
+# with the freshly built image digest, on its 30-minute schedule once main has
+# changed or when an operator requests a deploy. A manual
+# `kubectl apply -k` from a checkout overwrites that rollout with whatever the
+# checkout contains, including uncommitted edits. If that job cannot run, use
+# scripts/deploy-live-manual.sh (docs/manual-deploy.md), which deploys only
+# origin/main.
+resources:
+  - ../private-cluster
+  - ../gost-router
+images:
+  - name: ghcr.io/crawlora-org/freeproxyapi
+    newName: ghcr.io/crawlora-org/freeproxyapi
+    newTag: "20260913060344"
+configMapGenerator:
+  - name: freeproxyapi-config
+    behavior: merge
+    files:
+      - monitor.json=monitor.json

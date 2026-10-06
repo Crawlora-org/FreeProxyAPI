@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: freeproxyapi
+resources:
+  - namespace.yaml
+  - redis.yaml
+  - redis-networkpolicy.yaml
+  - service.yaml
+  - deployment.yaml
+  - monitor-pdb.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  - name: freeproxyapi-config
+    files:
+      - monitor.json=config/monitor.json
+      - proxies.txt=config/proxies.txt

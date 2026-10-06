@@ -1,0 +1,35 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, tokens, or real proxy endpoints. For security problems use the private reporting link instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Config (redacted), commands, and request URLs if relevant.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options: [Docker Compose, Kubernetes, go run / binary, Hosted service]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      render: text

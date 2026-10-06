@@ -1,0 +1,10 @@
+# Optional country-aware GOST v3 data plane.
+#
+# Prerequisites:
+#   - the freeproxyapi monitor Service is deployed
+#   - freeproxyapi-internal-api Secret exists
+#   - gost-router-auth Secret exists
+#   - the image tag below has been published from this source tree
+resources:
+  - gost-router.yaml
+  - gost-router-pdb.yaml

@@ -1,0 +1,52 @@
+services:
+  gost:
+    image: gogost/gost:3.3.0@sha256:f7a958c451928fbe1b99046d25bd0c9bf42019d4c60a82200f50dc8e617b7580
+    command: ["-C", "/runtime/gost.json"]
+    environment:
+      HOME: /tmp
+    ports:
+      - "127.0.0.1:3128:3128"
+      - "127.0.0.1:3129:3129"
+      - "127.0.0.1:3130:3130"
+      - "127.0.0.1:3131:3131"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./runtime:/runtime:ro
+
+  proxy-router:
+    # Immutable build timestamp tag; override FREEPROXYAPI_IMAGE to upgrade.
+    image: "${FREEPROXYAPI_IMAGE:-ghcr.io/crawlora-org/freeproxyapi:20260913060344}"
+    entrypoint: ["/usr/local/bin/proxy-router"]
+    depends_on:
+      - gost
+    environment:
+      FREEPROXYAPI_PUBLIC: "${FREEPROXYAPI_PUBLIC:-true}"
+      FREEPROXYAPI_URL: "${FREEPROXYAPI_URL:-https://freeproxyapi.crawlora.net/proxies}"
+      FREEPROXYAPI_COUNTRY: "${FREEPROXYAPI_COUNTRY:-}"
+      FREEPROXYAPI_EXIT_COUNTRY: "${FREEPROXYAPI_EXIT_COUNTRY:-}"
+      FREEPROXYAPI_ASN: "${FREEPROXYAPI_ASN:-}"
+      FREEPROXYAPI_ANONYMITY: "${FREEPROXYAPI_ANONYMITY:-}"
+      FREEPROXYAPI_GEO_MISMATCH: "${FREEPROXYAPI_GEO_MISMATCH:-false}"
+      FREEPROXYAPI_LIMIT: "${FREEPROXYAPI_LIMIT:-1000}"
+      GOST_MIN_RATIO_PCT: "${FREEPROXYAPI_MIN_RATIO_PCT:-80}"
+      GOST_MAX_LATENCY_MS: "${FREEPROXYAPI_MAX_LATENCY_MS:-0}"
+      GOST_CONFIG_FILE: /runtime/gost.json
+      GOST_API_URL: http://gost:18080
+      GOST_API_ADDRESS: :18080
+      GOST_API_USERNAME: "${GOST_API_USERNAME:?set GOST_API_USERNAME}"
+      GOST_API_PASSWORD: "${GOST_API_PASSWORD:?set GOST_API_PASSWORD}"
+      GOST_PROXY_USERNAME: "${GOST_PROXY_USERNAME:?set GOST_PROXY_USERNAME}"
+      GOST_PROXY_PASSWORD: "${GOST_PROXY_PASSWORD:?set GOST_PROXY_PASSWORD}"
+      GOST_COUNTRIES: "${GOST_COUNTRIES:-DE,SG,US}"
+      GOST_COUNTRY_FIELD: "${GOST_COUNTRY_FIELD:-entry}"
+      GOST_REFRESH_INTERVAL: "${GOST_REFRESH_INTERVAL:-1m}"
+      GOST_REQUEST_TIMEOUT: "${GOST_REQUEST_TIMEOUT:-15s}"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./runtime:/runtime

@@ -1,0 +1,174 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gost-router
+  namespace: freeproxyapi
+  labels:
+    app.kubernetes.io/name: gost-router
+    app.kubernetes.io/part-of: freeproxyapi
+spec:
+  # Each Pod syncs from the internal API independently, so a second replica
+  # keeps the proxy listeners up while the other restarts, reschedules, or waits
+  # for its first successful sync during a rollout.
+  replicas: 2
+  progressDeadlineSeconds: 1800
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gost-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gost-router
+        app.kubernetes.io/part-of: freeproxyapi
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: gost-router
+      imagePullSecrets:
+        - name: ghcr-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: proxy-router
+          image: ghcr.io/crawlora-org/freeproxyapi:20260911152031
+          command: ["/usr/local/bin/proxy-router"]
+          env:
+            - name: GOST_PROXY_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: gost-router-auth
+                  key: proxy-username
+            - name: GOST_PROXY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gost-router-auth
+                  key: proxy-password
+            - name: GOST_API_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: gost-router-auth
+                  key: api-username
+            - name: GOST_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gost-router-auth
+                  key: api-password
+            - name: GOST_COUNTRIES
+              value: "US"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+            - name: internal-api
+              mountPath: /internal-api
+              readOnly: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+        - name: gost
+          image: gogost/gost:3.3.0
+          args: ["-C", "/runtime/gost.json"]
+          env:
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: http-proxy
+              containerPort: 3128
+            - name: us-http
+              containerPort: 3129
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          # GOST starts from proxy-router's API-only bootstrap config and opens
+          # the proxy listener on the first successful sync. Give that up to 30
+          # minutes (the rollout deadline) before liveness can restart GOST.
+          startupProbe:
+            tcpSocket:
+              port: http-proxy
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 180
+          readinessProbe:
+            tcpSocket:
+              port: http-proxy
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket:
+              port: http-proxy
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: runtime
+              mountPath: /runtime
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: runtime
+          emptyDir:
+            sizeLimit: 8Mi
+        - name: internal-api
+          secret:
+            secretName: freeproxyapi-internal-api
+            items:
+              - key: token
+                path: token
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gost-router
+  namespace: freeproxyapi
+  labels:
+    app.kubernetes.io/name: gost-router
+    app.kubernetes.io/part-of: freeproxyapi
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gost-router
+  ports:
+    - name: http-proxy
+      port: 3128
+      targetPort: http-proxy
+    - name: us-http
+      port: 3129
+      targetPort: us-http

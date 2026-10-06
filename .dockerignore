@@ -1,0 +1,18 @@
+# Allowlist build context: the Dockerfile only needs the Go module and its
+# sources (including go:embed assets under internal/). Everything else --
+# .env files, terraform/ state and kubeconfigs, runtime/ and secrets/, .git,
+# .claude/, docs, and manifests -- stays out of the context and image layers.
+*
+!go.mod
+!go.sum
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!cmd/
+!internal/
+
+# Never ship local secrets even if one lands inside a source directory.
+**/.env
+**/.env.*
+**/*.tfstate*
+**/kubeconfig*
+**/coverage.out

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gost-public-bootstrap
+data:
+  gost.json: |
+    {
+      "api": {
+        "addr": "127.0.0.1:18080",
+        "auth": {
+          "username": "bootstrap",
+          "password": "bootstrap"
+        }
+      }
+    }

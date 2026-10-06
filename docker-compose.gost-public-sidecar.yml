@@ -1,0 +1,12 @@
+# Explicit local GOST-only sidecar entry point.
+# The services are defined in docker-compose.gost-public.yml so both commands
+# use the same refresh/filter configuration without duplicating it.
+services:
+  gost:
+    extends:
+      file: docker-compose.gost-public.yml
+      service: gost
+  proxy-router:
+    extends:
+      file: docker-compose.gost-public.yml
+      service: proxy-router

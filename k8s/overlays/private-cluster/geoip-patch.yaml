@@ -1,0 +1,46 @@
+# GeoIP database provisioning for the private-cluster deployment.
+#
+# Fetches a MaxMind-format country database at pod start into an emptyDir so
+# the monitor can annotate literal-IP candidates with country data. Source is
+# the P3TERX daily GeoLite2 build (GeoLite2 data (c) MaxMind, redistributed
+# under the GeoLite2 EULA); operators holding their own MaxMind license can
+# point the URL at official downloads instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freeproxyapi
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: geoip-db
+          image: alpine:3.21
+          command:
+            - sh
+            - -c
+            - wget -q -T 90 -O /geoip/GeoLite2-Country.mmdb https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-Country.mmdb && wget -q -T 90 -O /geoip/GeoLite2-ASN.mmdb https://raw.githubusercontent.com/P3TERX/GeoLite.mmdb/download/GeoLite2-ASN.mmdb && test -s /geoip/GeoLite2-Country.mmdb && test -s /geoip/GeoLite2-ASN.mmdb
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+          volumeMounts:
+            - name: geoip
+              mountPath: /geoip
+      containers:
+        - name: freeproxyapi
+          volumeMounts:
+            - name: geoip
+              mountPath: /geoip
+              readOnly: true
+      volumes:
+        - name: geoip
+          emptyDir:
+            sizeLimit: 64Mi

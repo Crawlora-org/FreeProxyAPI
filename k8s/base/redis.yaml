@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: freeproxyapi-redis
+  namespace: freeproxyapi
+spec:
+  selector:
+    app.kubernetes.io/name: freeproxyapi-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: freeproxyapi-redis
+  namespace: freeproxyapi
+spec:
+  serviceName: freeproxyapi-redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: freeproxyapi-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: freeproxyapi-redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --save
+            - ""
+            - --appendfsync
+            - everysec
+            - --aof-use-rdb-preamble
+            - "yes"
+            # AOF rewrite thresholds. A rewrite starts only when the AOF (base +
+            # incr) is >= min-size AND has grown percentage% over the last base.
+            # Evidence (2026-09-14): ~1.08 GB dataset -> ~320-400 MiB RDB base
+            # (ratio ~0.36); 50%/256MiB fired 25 rewrites in 135m, in bursts
+            # ~30s apart (~175 MiB incr each), fork CoW peak 447 MB. PVC is 5Gi
+            # (4.84 GiB usable, 0.3-1.0 GiB used).
+            # 100%/1GiB needs ~700 MiB of incr per rewrite today (~4x fewer
+            # rewrites). Worst-case disk mid-rewrite = old base B + incr at
+            # trigger max(B, 1GiB - B) + new base ~B + incr written during the
+            # rewrite (~0.25 GiB). At maxmemory 2gb with a padded 0.5 ratio,
+            # B = 1 GiB: 1 + 1 + 1 + 0.25 = 3.25 GiB, ~67% of the volume. Raising
+            # percentage further (200% -> ~88%) or a less compressible dataset
+            # needs a PVC expansion first (storage class ssd allows it). The
+            # larger incr (<= ~1 GiB) lengthens AOF replay on start; the 10m
+            # startup probe below covers that.
+            - --auto-aof-rewrite-percentage
+            - "100"
+            - --auto-aof-rewrite-min-size
+            - "1073741824"
+            # Redis is the primary store (queues, leases, validated set), so
+            # never evict keys: past maxmemory, writes fail with OOM errors
+            # while reads keep working, instead of the container being
+            # OOMKilled. 2gb plus AOF-rewrite fork copy-on-write stays under
+            # the 4Gi memory limit.
+            - --maxmemory
+            - "2gb"
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - name: redis
+              containerPort: 6379
+          # No CPU limit: throttling Redis stalls every monitor replica.
+          # Live RSS was ~1.1Gi (2026-09-14). The request covers steady state;
+          # the 4Gi limit covers the 2gb maxmemory dataset plus AOF rewrite
+          # fork copy-on-write (observed CoW peak ~447 MB).
+          resources:
+            requests:
+              cpu: 100m
+              memory: 1536Mi
+            limits:
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          # AOF replay of a multi-GiB dataset can take minutes; the startup
+          # probe (up to 10m) holds off liveness until Redis answers PONG so a
+          # long load is not killed and restarted in a loop.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli ping | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

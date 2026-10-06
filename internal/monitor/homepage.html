@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="FreeProxyAPI provides live, filterable proxy availability data for responsible developer workflows.">
+  <meta name="theme-color" content="#071018">
+  <link rel="canonical" href="{{BASE_URL}}/">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{BASE_URL}}/">
+  <meta property="og:title" content="FreeProxyAPI — live proxy availability data">
+  <meta property="og:description" content="Live, filterable proxy availability data for responsible developer workflows.">
+  <meta property="og:image" content="{{BASE_URL}}/dashboard/social-share.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="FreeProxyAPI — live proxy availability data">
+  <meta name="twitter:description" content="Live, filterable proxy availability data for responsible developer workflows.">
+  <meta name="twitter:image" content="{{BASE_URL}}/dashboard/social-share.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icon.png">
+  <title>FreeProxyAPI — live proxy availability data</title>
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebAPI",
+      "name": "FreeProxyAPI",
+      "url": "{{BASE_URL}}/",
+      "description": "Live, filterable proxy availability data. Query validated proxies by exit country, success rate, latency, anonymity, and HTTPS support.",
+      "documentation": "https://github.com/Crawlora-org/FreeProxyAPI",
+      "isAccessibleForFree": true
+    }
+  </script>
+  <style>
+    :root { color-scheme: dark; --bg:#071018; --panel:#0d1b27; --line:#1c3a4c; --text:#e8f1f5; --muted:#91a8b5; --cyan:#65e6d0; --blue:#86b9ff; --warm:#f4bf74; }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin:0; background:radial-gradient(circle at 80% -10%, #15394a 0, transparent 34rem), var(--bg); color:var(--text); font:16px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    a { color:inherit; }
+    .shell { width:min(1120px, calc(100% - 40px)); margin:auto; }
+    .nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 20px; padding:24px 0; }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:-.02em; text-decoration:none; }
+    .mark { display:block; width:30px; height:30px; border:1px solid #3c887f; border-radius:9px; background:#0d2e35; object-fit:cover; }
+    .nav-links { display:flex; flex-wrap:wrap; gap:4px 22px; color:var(--muted); font-size:14px; }
+    .nav-links a { text-decoration:none; }
+    .nav-links a:hover { color:var(--text); }
+    .hero { display:grid; grid-template-columns:minmax(0, 1.1fr) minmax(0, .9fr); gap:56px; align-items:center; padding:82px 0 72px; }
+    .eyebrow { color:var(--cyan); font:600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:.14em; text-transform:uppercase; }
+    h1 { max-width:720px; margin:18px 0; font-size:clamp(42px, 7vw, 76px); line-height:1.02; letter-spacing:-.065em; }
+    .lead { max-width:610px; margin:0; color:var(--muted); font-size:19px; }
+    .actions { display:flex; flex-wrap:wrap; gap:12px; margin-top:30px; }
+    .button { display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:10px; padding:11px 16px; background:var(--panel); text-decoration:none; font-weight:650; }
+    .button.primary { border-color:#56cdbc; background:var(--cyan); color:#05201f; }
+    .button:hover { transform:translateY(-1px); }
+    .terminal { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:16px; background:#061017; box-shadow:0 24px 70px #0008; }
+    .terminal-bar { display:flex; align-items:center; gap:7px; padding:13px 16px; border-bottom:1px solid #173040; color:#66828e; font-size:12px; }
+    .dot { width:8px; height:8px; border-radius:50%; background:#31505b; }
+    pre { overflow:auto; margin:0; padding:22px; color:#c4d8df; font:13px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+    code .key { color:var(--blue); } code .string { color:var(--cyan); } code .number { color:var(--warm); }
+    section { padding:68px 0; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:24px; margin-bottom:24px; }
+    h2 { margin:8px 0 0; font-size:clamp(28px, 4vw, 42px); line-height:1.1; letter-spacing:-.04em; }
+    .section-note { max-width:430px; margin:0; color:var(--muted); }
+    .grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:14px; }
+    .card { min-width:0; border:1px solid var(--line); border-radius:14px; padding:22px; background:linear-gradient(145deg, #102534, #0a1822); }
+    .card strong { display:block; margin-top:8px; font-size:29px; letter-spacing:-.04em; font-variant-numeric:tabular-nums; }
+    .card span, .muted { color:var(--muted); }
+    .card-detail { display:block; font-size:14px; line-height:1.45; }
+    .refresh { display:flex; align-items:center; gap:14px; margin:18px 0; padding:14px 18px; border:1px solid var(--line); border-radius:12px; background:#0a1822; }
+    .refresh-icon { display:grid; place-items:center; flex-shrink:0; width:34px; height:34px; border-radius:50%; background:#12332f; color:var(--cyan); }
+    .refresh-copy { flex:1; min-width:0; }
+    .refresh-label { display:block; color:var(--muted); font-size:13px; }
+    .refresh-track { overflow:hidden; height:3px; margin-top:7px; border-radius:3px; background:var(--line); }
+    .refresh-fill { height:100%; width:0; border-radius:inherit; background:var(--cyan); transition:width .25s linear; }
+    .refresh-time { min-width:5ch; color:var(--cyan); text-align:right; font:600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric:tabular-nums; }
+    .refresh[data-state="error"] .refresh-icon, .refresh[data-state="error"] .refresh-time { color:var(--warm); }
+    .country-list { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px; margin-top:14px; }
+    .country { display:flex; align-items:baseline; justify-content:space-between; gap:12px; min-width:0; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:#0a1822; font-size:13px; }
+    .country-name { overflow:hidden; min-width:0; text-overflow:ellipsis; white-space:nowrap; }
+    .country-code { margin-left:6px; color:var(--muted); font:12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .country b { color:var(--cyan); font:600 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .country-note { margin:10px 2px 0; color:var(--muted); font-size:13px; }
+    .country-note:empty { display:none; }
+    .proxy-panel { margin-top:32px; overflow:hidden; border:1px solid var(--line); border-radius:14px; background:#0a1822; }
+    .proxy-toolbar, .pagination { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; padding:20px; }
+    .proxy-toolbar { align-items:start; }
+    .proxy-toolbar h3 { margin:0 0 4px; font-size:21px; letter-spacing:-.03em; }
+    .proxy-toolbar p { margin:0; color:var(--muted); font-size:13px; }
+    .proxy-filters { display:flex; flex-wrap:wrap; align-items:end; gap:10px 12px; }
+    .proxy-filters label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+    .proxy-filters .toggle { display:flex; align-items:center; gap:8px; min-height:42px; color:var(--text); font-size:13px; cursor:pointer; }
+    .toggle input { width:16px; height:16px; margin:0; accent-color:var(--cyan); }
+    input, select { border:1px solid var(--line); border-radius:8px; padding:9px 10px; background:var(--bg); color:var(--text); font:inherit; }
+    .country-filter { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+    .country-combobox { position:relative; width:220px; max-width:100%; }
+    #exit-country { width:100%; }
+    .country-options { position:absolute; z-index:2; top:calc(100% + 6px); right:0; left:0; max-height:240px; overflow-y:auto; border:1px solid var(--line); border-radius:8px; background:var(--bg); box-shadow:0 12px 28px #02080c99; }
+    .country-options[hidden] { display:none; }
+    .country-option { display:block; width:100%; padding:9px 10px; border:0; border-radius:0; background:transparent; color:var(--text); text-align:left; font-size:13px; }
+    .country-option:hover, .country-option[data-active="true"] { background:#102534; }
+    .country-option[aria-selected="true"] { color:var(--cyan); }
+    .country-options-empty { padding:10px; color:var(--muted); font-size:13px; }
+    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0, 0, 0, 0); white-space:nowrap; border:0; }
+    button { cursor:pointer; color:var(--text); font:inherit; }
+    button:disabled { opacity:.4; cursor:default; transform:none; }
+    :focus-visible { outline:2px solid var(--cyan); outline-offset:3px; }
+    .table-scroll { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; text-align:left; white-space:nowrap; font-size:13px; }
+    caption { text-align:left; padding:10px 20px; color:var(--muted); }
+    th { background:#102534; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+    th, td { padding:13px 20px; border-bottom:1px solid var(--line); }
+    tbody tr:hover { background:#10212d; }
+    .proxy-endpoint { display:flex; align-items:center; gap:10px; }
+    .proxy-url { color:var(--cyan); font:13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .copy-button { flex-shrink:0; border:1px solid var(--line); border-radius:6px; padding:2px 8px; background:var(--panel); color:var(--muted); font-size:11px; font-weight:600; line-height:1.5; }
+    .copy-button:hover { border-color:#3c887f; color:var(--text); }
+    .copy-button[data-state="copied"] { border-color:#3c887f; color:var(--cyan); }
+    .copy-button[data-state="failed"] { border-color:#7a5a2c; color:var(--warm); }
+    .badge-warn { flex-shrink:0; border:1px solid #7a5a2c; border-radius:999px; padding:0 7px; background:#2a1f10; color:var(--warm); font-size:11px; font-weight:600; line-height:1.6; }
+    .cell-empty { color:#66828e; }
+    .https-yes { color:var(--cyan); }
+    .pagination { color:var(--muted); font-size:13px; }
+    .page-buttons { display:flex; align-items:center; gap:12px; }
+    .proxy-message { min-height:24px; padding:0 20px 12px; color:var(--muted); font-size:13px; }
+    .steps { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; counter-reset:step; }
+    .step { position:relative; padding:24px 22px 22px 58px; border-top:1px solid var(--line); background:#0a1822; }
+    .step:before { counter-increment:step; content:"0" counter(step); position:absolute; top:24px; left:20px; color:var(--cyan); font:12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .step h3 { margin:0 0 6px; font-size:17px; }
+    .step p { margin:0; color:var(--muted); }
+    .step code { overflow-wrap:anywhere; }
+    .note { border:1px solid #315968; border-radius:14px; padding:22px; background:#0b2029; color:#c5d8dd; }
+    .note strong { color:var(--cyan); }
+    footer { display:flex; justify-content:space-between; gap:20px; padding:30px 0 46px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
+    footer a { text-decoration:none; }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .refresh-fill { transition:none; } .button:hover { transform:none; } }
+    @media (max-width:960px) { .hero { grid-template-columns:minmax(0, 1fr); gap:34px; padding-top:54px; } .grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+    @media (max-width:780px) { .steps { grid-template-columns:1fr; } .country-list { grid-template-columns:repeat(2, minmax(0, 1fr)); } .section-head { display:block; } .section-note { margin-top:12px; } .nav-links { gap:4px 14px; } }
+    @media (max-width:480px) { .grid { gap:10px; } .card { padding:16px; } .card strong { font-size:25px; } .card-detail { font-size:13px; } pre { padding:16px; font-size:11.5px; } .country { padding:10px 12px; } .proxy-toolbar, .pagination { padding:16px; } .country-combobox { width:100%; } .country-filter { flex:1 1 100%; } }
+    @media (max-width:430px) { .shell { width:min(100% - 28px, 1120px); } .nav-links a:nth-child(2) { display:none; } h1 { font-size:45px; } footer { display:block; } footer div + div { margin-top:10px; } }
+    @media (max-width:340px) { .grid, .country-list { grid-template-columns:minmax(0, 1fr); } }
+  </style>
+</head>
+<body>
+  <header class="shell nav">
+    <a class="brand" href="/"><img class="mark" src="/icon.png" alt="" width="30" height="30" aria-hidden="true"><span>FreeProxyAPI</span></a>
+    <nav class="nav-links" aria-label="Main navigation"><a href="#explorer">Live data</a><a href="#quickstart">Quickstart</a><a href="/stats">Stats</a><a href="/dashboard">Dashboard</a></nav>
+  </header>
+  <main>
+    <section class="shell hero">
+      <div><div class="eyebrow">validated availability data</div><h1>Find the right proxy for the job.</h1><p class="lead">A small, fast API for querying live proxy availability by country, reliability, latency, anonymity, and HTTPS support.</p><div class="actions"><a class="button primary" href="#quickstart">Try the API</a><a class="button" href="#explorer">View live stats</a></div></div>
+      <div class="terminal" role="region" aria-label="API request example"><div class="terminal-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span style="margin-left:6px">request.sh</span></div><pre><code><span class="key">$</span> curl -G \
+  <span class="string" data-api-origin>{{API_ORIGIN}}</span><span class="string">/proxies</span> \
+  -d exit_country=US \
+  -d min_ratio_pct=80 \
+  -d https=true \
+  -d exclude_tampered=true
+
+<span class="key">{</span>
+  <span class="key">"count"</span>: <span class="number">50</span>,
+  <span class="key">"has_more"</span>: <span class="number">true</span>,
+  <span class="key">"proxies"</span>: [ ... ]
+<span class="key">}</span></code></pre></div>
+    </section>
+    <section id="explorer" class="shell">
+      <div class="section-head"><div><div class="eyebrow">live snapshot</div><h2>Know what is available now.</h2></div><p class="section-note">Aggregate health data is public. The page refreshes automatically from the same endpoint your monitoring can use.</p></div>
+      <div class="grid">
+        <div class="card"><span>Validated proxies</span><strong id="total">—</strong><span class="card-detail" id="checked">Loading live data…</span></div>
+        <div class="card"><span>Elite anonymity</span><strong id="elite">—</strong><span class="card-detail" id="elite-share">share of validated proxies</span></div>
+        <div class="card"><span>Under 500 ms</span><strong id="fast">—</strong><span class="card-detail" id="fast-share">share of validated proxies</span></div>
+        <div class="card"><span>Countries covered</span><strong id="countries">—</strong><span class="card-detail">known entry countries</span></div>
+      </div>
+      <div class="refresh" id="refresh" data-state="loading">
+        <span class="refresh-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 6.1A8 8 0 0 1 20 12M4 12a8 8 0 0 0 13.9 5.9"/></svg></span>
+        <div class="refresh-copy"><span class="refresh-label" id="refresh-label" role="status">Loading live stats…</span><div class="refresh-track" aria-hidden="true"><div class="refresh-fill" id="refresh-fill"></div></div></div>
+        <span class="refresh-time" id="refresh-time" role="timer" aria-label="Time until next stats refresh">—</span>
+      </div>
+      <div class="country-list" id="country-list" aria-live="polite"><div class="country"><span class="country-name">Loading</span><b>…</b></div></div>
+      <p class="country-note" id="country-note"></p>
+      <div class="proxy-panel">
+        <div class="proxy-toolbar">
+          <div><h3>Browse live proxies</h3><p>Server-side pages · refreshed automatically</p></div>
+          <form class="proxy-filters" id="proxy-filters">
+            <div class="country-filter">
+              <label for="exit-country">Exit country</label>
+              <div class="country-combobox">
+                <input id="exit-country" type="text" role="combobox" aria-autocomplete="list" aria-controls="exit-country-options" aria-expanded="false" autocomplete="off" value="All countries" placeholder="Search stable countries">
+                <input id="exit-country-value" type="hidden" name="exit_country" value="">
+                <div id="exit-country-options" class="country-options" role="listbox" aria-label="Available exit countries" data-state="loading" hidden><div class="country-options-empty">Loading stable countries…</div></div>
+              </div>
+              <span id="exit-country-status" class="sr-only" aria-live="polite"></span>
+            </div>
+            <label for="min-ratio">Min. success<select id="min-ratio"><option value="0">Any</option><option value="80" selected>80%</option><option value="90">90%</option><option value="100">100%</option></select></label>
+            <label for="anonymity">Anonymity<select id="anonymity"><option value="" selected>Any</option><option value="elite">Elite</option><option value="anonymous">Anonymous</option><option value="transparent">Transparent</option></select></label>
+            <label class="toggle" for="https-only"><input id="https-only" type="checkbox">HTTPS only</label>
+            <label class="toggle" for="hide-tampered"><input id="hide-tampered" type="checkbox" checked>Hide modified traffic</label>
+            <button class="button" type="submit">Apply filters</button>
+          </form>
+        </div>
+        <div class="table-scroll" tabindex="0" role="region" aria-label="Proxy results">
+          <table id="proxy-table" aria-busy="true"><caption>Country filters use the observed exit location. “Modified” marks proxies seen altering responses.</caption><thead><tr><th scope="col">Proxy</th><th scope="col">Protocol</th><th scope="col">Exit country</th><th scope="col">Success</th><th scope="col">Latency</th><th scope="col">Anonymity</th><th scope="col">HTTPS</th><th scope="col">Last checked</th></tr></thead><tbody id="proxy-rows"><tr><td colspan="8">Loading proxies…</td></tr></tbody></table>
+        </div>
+        <div class="pagination">
+          <span id="proxy-range">Loading…</span>
+          <label for="page-size">Rows per page <select id="page-size"><option value="10">10</option><option value="25">25</option><option value="50">50</option></select></label>
+          <nav class="page-buttons" aria-label="Proxy pagination"><button class="button" id="previous-page" disabled>Previous</button><span id="proxy-page">Page 1</span><button class="button" id="next-page" disabled>Next</button></nav>
+          <a id="proxy-api-link" href="/proxies?min_ratio_pct=80&amp;exclude_tampered=true">View JSON ↗</a>
+        </div>
+        <div class="proxy-message" id="proxy-message" role="status"></div>
+        <span class="sr-only" id="copy-status" aria-live="polite"></span>
+      </div>
+    </section>
+    <section id="quickstart" class="shell">
+      <div class="section-head"><div><div class="eyebrow">three lines to start</div><h2>Simple enough to ship today.</h2></div><p class="section-note">Responses are JSON pages of up to 1,000 matching proxies. Use limit for a smaller page and offset with has_more to read further.</p></div>
+      <div class="steps"><article class="step"><h3>Choose a country</h3><p>Use <code>exit_country=US</code> to find proxies with a US exit. <code>country</code> optionally filters the entry location.</p></article><article class="step"><h3>Set a quality floor</h3><p>Combine <code>min_ratio_pct</code>, <code>max_latency_ms</code>, and <code>anonymity</code>. Add <code>https=true</code> for HTTPS-capable proxies and <code>exclude_tampered=true</code> to skip proxies seen modifying traffic.</p></article><article class="step"><h3>Cache the response</h3><p>Public results are edge-cacheable for 30 seconds and limited by client IP to keep access fair.</p></article></div>
+      <div class="terminal" style="margin-top:18px"><div class="terminal-bar"><span>javascript</span></div><pre><code><span class="key">const</span> params = <span class="key">new</span> URLSearchParams({
+  exit_country: <span class="string">"US"</span>,
+  min_ratio_pct: <span class="string">"80"</span>,
+  https: <span class="string">"true"</span>,
+  exclude_tampered: <span class="string">"true"</span>,
+});
+<span class="key">const</span> response = <span class="key">await</span> fetch(
+  <span class="string">"<span data-api-origin>{{API_ORIGIN}}</span>/proxies?"</span> + params
+);
+<span class="key">const</span> { proxies } = <span class="key">await</span> response.json();</code></pre></div>
+    </section>
+    <section class="shell"><div class="note"><strong>Run carefully.</strong> Availability can change after a response is cached. Only use proxies and target websites you are authorized to access, and follow applicable laws, terms, and network policies. Before running large-scale validation in the cloud, consult your provider first: high-volume traffic can trigger abuse systems or be mistaken for scanning or DDoS-like activity.</div></section>
+  </main>
+  <footer class="shell"><div>FreeProxyAPI · live availability data for developers</div><div><a href="/stats">API stats</a> · <a href="/dashboard">Dashboard</a> · <a href="https://github.com/Crawlora-org/FreeProxyAPI">GitHub</a></div></footer>
+  <div class="shell" style="padding:0 0 28px;color:var(--muted);font-size:13px">{{GEOIP_ATTRIBUTION}}</div>
+  <script>
+    const nf = new Intl.NumberFormat();
+    const pf = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 0 });
+    const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const localTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: browserTimeZone, timeZoneName: 'short' });
+    const localShortTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: browserTimeZone, timeZoneName: 'short' });
+    const localDateTimeFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'medium', timeZone: browserTimeZone });
+    function setText(id, value) { document.getElementById(id).textContent = value; }
+    function localTime(value, formatter = localTimeFormatter) {
+      if (value === null || value === undefined || value === '') return '—';
+      const date = value instanceof Date ? value : new Date(value);
+      return Number.isNaN(date.getTime()) ? '—' : formatter.format(date);
+    }
+    function relativeTime(ms) {
+      const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+      if (seconds < 45) return 'just now';
+      const minutes = Math.round(seconds / 60);
+      if (minutes < 60) return minutes + ' min ago';
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return hours + ' h ago';
+      return Math.round(hours / 24) + ' d ago';
+    }
+    function share(value, total) { return total > 0 ? pf.format(value / total) : '—'; }
+    function finite(value) { const number = Number(value); return value !== null && value !== undefined && value !== '' && Number.isFinite(number) ? number : null; }
+    let proxyRows = [], proxyPage = 1, proxyPageSize = 10, proxyHasMore = false;
+    let proxyController;
+    const countryInput = document.getElementById('exit-country');
+    const countryValue = document.getElementById('exit-country-value');
+    const countryOptions = document.getElementById('exit-country-options');
+    const countryStatus = document.getElementById('exit-country-status');
+    let stableCountries = [], countryActiveIndex = -1, countryMenuOpen = false;
+    const countryNames = typeof Intl.DisplayNames === 'function' ? new Intl.DisplayNames(undefined, { type: 'region' }) : null;
+    function countryName(code) {
+      const normalized = String(code).toUpperCase();
+      try { return (countryNames && countryNames.of(normalized)) || normalized; } catch (_) { return normalized; }
+    }
+    function countryLabel(code) {
+      const normalized = String(code).toUpperCase();
+      const name = countryName(normalized);
+      return name !== normalized ? name + ' (' + normalized + ')' : normalized;
+    }
+    function isKnownCountry(code) { return /^[A-Za-z]{2}$/.test(code); }
+    function filteredCountries() {
+      const selected = countryValue.value ? stableCountries.find(country => country.code === countryValue.value) : { label: 'All countries' };
+      const entered = countryInput.value.trim().toLowerCase();
+      const query = selected && entered === selected.label.toLowerCase() ? '' : entered;
+      return stableCountries.filter(country => !query || country.label.toLowerCase().includes(query) || country.code.toLowerCase().includes(query));
+    }
+    function renderCountryOptions() {
+      const matches = filteredCountries();
+      countryOptions.replaceChildren();
+      if (!stableCountries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'country-options-empty';
+        empty.textContent = countryOptions.dataset.state === 'loading' ? 'Loading stable countries…' : 'No stable countries are available.';
+        countryOptions.appendChild(empty);
+        countryActiveIndex = -1;
+        return;
+      }
+      if (!matches.length) {
+        const empty = document.createElement('div');
+        empty.className = 'country-options-empty';
+        empty.textContent = 'No matching stable countries.';
+        countryOptions.appendChild(empty);
+        countryActiveIndex = -1;
+        return;
+      }
+      const all = { code: '', label: 'All countries' };
+      [all, ...matches].forEach((country, index) => {
+        const option = document.createElement('button');
+        option.type = 'button'; option.className = 'country-option'; option.id = 'exit-country-option-' + index;
+        option.setAttribute('role', 'option'); option.dataset.code = country.code;
+        option.setAttribute('aria-selected', String(country.code === countryValue.value));
+        option.dataset.active = String(index === countryActiveIndex);
+        option.textContent = country.label;
+        option.addEventListener('mousedown', event => event.preventDefault());
+        option.addEventListener('click', () => selectCountry(country));
+        countryOptions.appendChild(option);
+      });
+      if (countryActiveIndex >= matches.length + 1) countryActiveIndex = 0;
+      const active = countryOptions.children[countryActiveIndex];
+      if (active) { countryInput.setAttribute('aria-activedescendant', active.id); active.dataset.active = 'true'; }
+      else countryInput.removeAttribute('aria-activedescendant');
+    }
+    function openCountryMenu() {
+      countryMenuOpen = true; countryOptions.hidden = false; countryInput.setAttribute('aria-expanded', 'true');
+      const selected = countryValue.value && stableCountries.find(country => country.code === countryValue.value);
+      const query = countryInput.value.trim().toLowerCase();
+      const selectedLabel = (selected ? selected.label : 'All countries').toLowerCase();
+      if (!query || query === selectedLabel) countryActiveIndex = 0;
+      else if (countryActiveIndex < 1) countryActiveIndex = 1;
+      renderCountryOptions();
+    }
+    function closeCountryMenu(restoreSelection = false) {
+      if (restoreSelection) {
+        const selected = stableCountries.find(country => country.code === countryValue.value);
+        if (countryValue.value && !selected) { resetCountryToAll(true); return; }
+        countryInput.value = selected ? selected.label : 'All countries';
+      }
+      countryMenuOpen = false; countryOptions.hidden = true; countryInput.setAttribute('aria-expanded', 'false'); countryInput.removeAttribute('aria-activedescendant');
+    }
+    function selectCountry(country) {
+      countryValue.value = country.code; countryInput.value = country.label; countryStatus.textContent = country.label + ' selected.';
+      closeCountryMenu();
+    }
+    function resetCountryToAll(refreshResults = false) {
+      const wasFiltered = Boolean(countryValue.value);
+      countryValue.value = ''; countryInput.value = 'All countries'; countryStatus.textContent = 'All countries selected.';
+      closeCountryMenu();
+      if (refreshResults && wasFiltered) {
+        proxyQuery = buildProxyQuery();
+        proxyRows = []; proxyPage = 1; renderProxies('Loading proxies…'); loadProxies();
+      }
+    }
+    function buildProxyQuery() {
+      const params = new URLSearchParams();
+      if (countryValue.value) params.set('exit_country', countryValue.value);
+      params.set('min_ratio_pct', document.getElementById('min-ratio').value);
+      const anonymity = document.getElementById('anonymity').value;
+      if (anonymity) params.set('anonymity', anonymity);
+      if (document.getElementById('https-only').checked) params.set('https', 'true');
+      if (document.getElementById('hide-tampered').checked) params.set('exclude_tampered', 'true');
+      return '/proxies?' + params;
+    }
+    let proxyQuery = buildProxyQuery();
+    function proxyPageQuery() {
+      return proxyQuery + '&limit=' + proxyPageSize + '&offset=' + (proxyPage - 1) * proxyPageSize;
+    }
+    function updateProxyApiLink() { document.getElementById('proxy-api-link').href = proxyPageQuery(); }
+    function setStableCountries(stableByCountry) {
+      const source = stableByCountry && typeof stableByCountry === 'object' ? stableByCountry : {};
+      stableCountries = Object.entries(source)
+        .filter(([code, count]) => isKnownCountry(code) && Number(count) > 0)
+        .map(([code, count]) => ({ code: code.toUpperCase(), count: Number(count), label: countryLabel(code) }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      countryOptions.dataset.state = 'ready';
+      if (countryValue.value && !stableCountries.some(country => country.code === countryValue.value)) resetCountryToAll(true);
+      if (countryMenuOpen) renderCountryOptions();
+    }
+    countryInput.addEventListener('focus', openCountryMenu);
+    countryInput.addEventListener('blur', () => setTimeout(() => { if (!countryOptions.contains(document.activeElement)) closeCountryMenu(true); }, 0));
+    countryInput.addEventListener('input', () => {
+      const selected = countryValue.value && stableCountries.find(country => country.code === countryValue.value);
+      const query = countryInput.value.trim().toLowerCase();
+      countryActiveIndex = query && query !== (selected ? selected.label : 'All countries').toLowerCase() ? 1 : 0;
+      if (!countryMenuOpen) openCountryMenu(); else renderCountryOptions();
+    });
+    countryInput.addEventListener('keydown', event => {
+      if (event.key === 'Escape') { event.preventDefault(); closeCountryMenu(true); return; }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault(); if (!countryMenuOpen) openCountryMenu();
+        const optionCount = countryOptions.querySelectorAll('[role="option"]').length;
+        if (optionCount) { countryActiveIndex = (countryActiveIndex + (event.key === 'ArrowDown' ? 1 : optionCount - 1)) % optionCount; renderCountryOptions(); }
+        return;
+      }
+      if (event.key === 'Enter' && countryMenuOpen) {
+        event.preventDefault(); const active = countryOptions.querySelector('[data-active="true"]');
+        if (active) selectCountry(active.dataset.code ? stableCountries.find(country => country.code === active.dataset.code) : { code: '', label: 'All countries' });
+      }
+    });
+    document.addEventListener('pointerdown', event => {
+      if (event.target.closest('.country-combobox') || event.target.closest('#proxy-filters button[type="submit"]')) return;
+      closeCountryMenu(true);
+    });
+    async function copyText(value) {
+      if (navigator.clipboard && window.isSecureContext) {
+        // Some browsers leave the permission prompt pending forever; fall back after a short wait.
+        let timer;
+        const copied = await Promise.race([
+          navigator.clipboard.writeText(value).then(() => true, () => false),
+          new Promise(resolve => { timer = setTimeout(() => resolve(false), 1500); })
+        ]);
+        clearTimeout(timer);
+        if (copied) return;
+      }
+      const area = document.createElement('textarea');
+      area.value = value; area.setAttribute('readonly', ''); area.style.position = 'fixed'; area.style.opacity = '0';
+      document.body.appendChild(area); area.select();
+      const copied = document.execCommand('copy'); area.remove();
+      if (!copied) throw new Error('copy failed');
+    }
+    function copyButton(url) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'copy-button'; button.dataset.url = url;
+      button.textContent = 'Copy'; button.setAttribute('aria-label', 'Copy ' + url);
+      button.addEventListener('click', async () => {
+        clearTimeout(button.resetTimer);
+        try { await copyText(url); button.dataset.state = 'copied'; button.textContent = 'Copied'; setText('copy-status', 'Copied ' + url + ' to the clipboard.'); }
+        catch (_) { button.dataset.state = 'failed'; button.textContent = 'Failed'; setText('copy-status', 'Could not copy to the clipboard.'); }
+        button.resetTimer = setTimeout(() => { button.dataset.state = ''; button.textContent = 'Copy'; }, 1600);
+      });
+      return button;
+    }
+    function cell(value, className) {
+      const td = document.createElement('td');
+      if (value === null || value === undefined || value === '') { td.textContent = '—'; td.className = 'cell-empty'; }
+      else { td.textContent = value; if (className) td.className = className; }
+      return td;
+    }
+    function titleCase(value) { return value ? value.charAt(0).toUpperCase() + value.slice(1) : value; }
+    function renderProxies(emptyMessage = 'No proxies match these filters. Try another exit country, a lower success rate, or fewer toggles.') {
+      const start = (proxyPage - 1) * proxyPageSize;
+      const body = document.getElementById('proxy-rows');
+      const focused = document.activeElement && document.activeElement.classList.contains('copy-button') && body.contains(document.activeElement) ? document.activeElement.dataset.url : null;
+      body.replaceChildren();
+      for (const proxy of proxyRows) {
+        const row = document.createElement('tr');
+        const url = String(proxy.url || '');
+        const endpointCell = document.createElement('td');
+        const endpoint = document.createElement('div'); endpoint.className = 'proxy-endpoint';
+        const code = document.createElement('code'); code.className = 'proxy-url'; code.textContent = url || '—';
+        endpoint.appendChild(code);
+        if (proxy.tampered === true) {
+          const badge = document.createElement('span'); badge.className = 'badge-warn'; badge.textContent = 'Modified';
+          badge.title = 'Responses through this proxy were observed being modified';
+          endpoint.appendChild(badge);
+        }
+        if (url) endpoint.appendChild(copyButton(url));
+        endpointCell.appendChild(endpoint); row.appendChild(endpointCell);
+        row.appendChild(cell(proxy.scheme ? String(proxy.scheme).toUpperCase() : ''));
+        const exit = String(proxy.exit_country || '');
+        const exitCell = cell(isKnownCountry(exit) ? countryName(exit) : '');
+        if (isKnownCountry(exit)) exitCell.title = exit.toUpperCase();
+        row.appendChild(exitCell);
+        const ratio = finite(proxy.ok_ratio_pct);
+        row.appendChild(cell(ratio === null ? '' : ratio + '%'));
+        const latency = finite(proxy.latency_ms);
+        row.appendChild(cell(latency > 0 ? nf.format(latency) + ' ms' : ''));
+        const anonymity = String(proxy.anonymity || '').toLowerCase();
+        row.appendChild(cell(anonymity && anonymity !== 'unknown' ? titleCase(anonymity) : ''));
+        row.appendChild(proxy.https_ok === true ? cell('Yes', 'https-yes') : proxy.https_ok === false ? cell('No') : cell(''));
+        const checked = Number(proxy.last_checked_at_ms);
+        const checkedCell = document.createElement('td');
+        if (checked > 0) {
+          const time = document.createElement('time');
+          time.dateTime = new Date(checked).toISOString(); time.title = localTime(checked, localDateTimeFormatter);
+          time.textContent = relativeTime(checked);
+          checkedCell.appendChild(time);
+        } else { checkedCell.textContent = '—'; checkedCell.className = 'cell-empty'; }
+        row.appendChild(checkedCell);
+        body.appendChild(row);
+      }
+      if (!proxyRows.length) { const row = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 8; td.textContent = emptyMessage; row.appendChild(td); body.appendChild(row); }
+      if (focused) { const match = Array.from(body.querySelectorAll('.copy-button')).find(button => button.dataset.url === focused); if (match) match.focus(); }
+      setText('proxy-range', proxyRows.length ? 'Showing ' + nf.format(start + 1) + '–' + nf.format(start + proxyRows.length) + (proxyHasMore ? ' · more available' : ' · end of results') : 'No proxies on this page');
+      setText('proxy-page', 'Page ' + proxyPage);
+      document.getElementById('previous-page').disabled = proxyPage <= 1;
+      document.getElementById('next-page').disabled = !proxyHasMore;
+      updateProxyApiLink();
+    }
+    async function loadProxies() {
+      if (proxyController) proxyController.abort();
+      const controller = new AbortController();
+      proxyController = controller;
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      document.getElementById('proxy-table').setAttribute('aria-busy', 'true');
+      setText('proxy-message', 'Refreshing proxy results…');
+      updateProxyApiLink();
+      try {
+        const response = await fetch(proxyPageQuery(), { headers: { accept: 'application/json' }, signal: controller.signal });
+        if (!response.ok) throw new Error(response.status === 429 ? 'Too many requests. Results will retry on the next refresh.' : 'Proxy results are temporarily unavailable. Retrying on the next refresh.');
+        // An edge error page is not JSON; never surface the parser message.
+        const data = await response.json().catch(() => ({}));
+        if (!Array.isArray(data.proxies)) throw new Error('Invalid proxy response. Retrying on the next refresh.');
+        if (proxyController !== controller) return;
+        if (!data.proxies.length && proxyPage > 1) {
+          // The validated pool shrank below this page; step back and retry.
+          proxyPage--; clearTimeout(timeout); proxyController = null; loadProxies(); return;
+        }
+        proxyRows = data.proxies;
+        proxyHasMore = Boolean(data.has_more);
+        renderProxies();
+        setText('proxy-message', 'Updated ' + localTime(new Date()));
+      } catch (error) {
+        if (proxyController !== controller) return;
+        if (!proxyRows.length) renderProxies('Unable to load proxies. Retrying on the next refresh.');
+        setText('proxy-message', (proxyRows.length ? 'Showing previous results. ' : '') + (error.name === 'AbortError' ? 'Request timed out. Retrying on the next refresh.' : error.message));
+      } finally {
+        clearTimeout(timeout);
+        if (proxyController === controller) document.getElementById('proxy-table').setAttribute('aria-busy', 'false');
+      }
+    }
+    document.getElementById('proxy-filters').addEventListener('submit', event => {
+      event.preventDefault();
+      const entered = countryInput.value.trim();
+      const exact = stableCountries.find(country => country.code.toLowerCase() === entered.toLowerCase() || country.label.toLowerCase() === entered.toLowerCase());
+      if (exact) selectCountry(exact);
+      else if (!entered || entered.toLowerCase() === 'all countries') resetCountryToAll();
+      else {
+        const selected = stableCountries.find(country => country.code === countryValue.value);
+        if (selected) selectCountry(selected); else resetCountryToAll();
+      }
+      proxyQuery = buildProxyQuery();
+      proxyRows = []; proxyPage = 1; renderProxies('Loading proxies…'); loadProxies();
+    });
+    document.getElementById('page-size').addEventListener('change', event => { proxyPageSize = Number(event.target.value); proxyPage = 1; loadProxies(); });
+    document.getElementById('previous-page').addEventListener('click', () => { if (proxyPage > 1) { proxyPage--; loadProxies(); } });
+    document.getElementById('next-page').addEventListener('click', () => { if (proxyHasMore) { proxyPage++; loadProxies(); } });
+    function renderShareCard(valueId, detailId, value, total) {
+      if (value === null) { setText(valueId, '—'); setText(detailId, 'Not reported yet'); return; }
+      setText(valueId, nf.format(value)); setText(detailId, share(value, total) + ' of validated proxies');
+    }
+    function renderStats(data) {
+      const total = finite(data.total) || 0;
+      setText('total', nf.format(total));
+      setText('checked', 'Checked ' + localTime(data.checked_at, localShortTimeFormatter));
+      const anonymity = data.by_anonymity && typeof data.by_anonymity === 'object' ? data.by_anonymity : null;
+      renderShareCard('elite', 'elite-share', anonymity ? finite(anonymity.elite) : null, total);
+      const bands = data.latency_bands && typeof data.latency_bands === 'object' ? data.latency_bands : null;
+      const fastParts = bands ? [finite(bands['<200ms']), finite(bands['200-500ms'])] : [null, null];
+      renderShareCard('fast', 'fast-share', fastParts.every(part => part === null) ? null : (fastParts[0] || 0) + (fastParts[1] || 0), total);
+      const byCountry = Object.entries(data.by_country || {});
+      const known = byCountry.filter(([code, count]) => isKnownCountry(code) && Number(count) > 0);
+      const unknown = byCountry.filter(([code]) => !isKnownCountry(code)).reduce((sum, [, count]) => sum + (Number(count) || 0), 0);
+      setText('countries', nf.format(known.length));
+      const entries = known.sort((a, b) => b[1] - a[1]).slice(0, 12);
+      document.getElementById('country-list').replaceChildren(...entries.map(([code, count]) => {
+        const item = document.createElement('div'); item.className = 'country';
+        const name = document.createElement('span'); name.className = 'country-name';
+        const normalized = code.toUpperCase(), label = countryName(normalized);
+        name.title = countryLabel(normalized);
+        if (label !== normalized) { name.textContent = label; const small = document.createElement('span'); small.className = 'country-code'; small.textContent = normalized; name.appendChild(small); }
+        else name.textContent = normalized;
+        const totalCount = document.createElement('b'); totalCount.textContent = nf.format(count);
+        item.append(name, totalCount);
+        return item;
+      }));
+      setText('country-note', unknown > 0 ? nf.format(unknown) + ' validated ' + (unknown === 1 ? 'proxy has' : 'proxies have') + ' an unknown entry country and ' + (unknown === 1 ? 'is' : 'are') + ' not listed.' : '');
+    }
+    const refreshInterval = 30000;
+    let nextRefreshAt = 0;
+    let refreshPending = false;
+    function updateCountdown() {
+      // Hidden tabs stop polling; visibilitychange resumes (and refreshes if overdue).
+      if (refreshPending || !nextRefreshAt || document.hidden) return;
+      const remaining = Math.max(0, nextRefreshAt - Date.now());
+      setText('refresh-time', '00:' + String(Math.ceil(remaining / 1000)).padStart(2, '0'));
+      document.getElementById('refresh-fill').style.width = ((1 - remaining / refreshInterval) * 100) + '%';
+      if (remaining === 0) loadStats();
+    }
+    async function loadStats() {
+      if (refreshPending) return;
+      refreshPending = true;
+      loadProxies();
+      const refresh = document.getElementById('refresh');
+      refresh.dataset.state = 'loading';
+      setText('refresh-label', nextRefreshAt ? 'Refreshing live stats…' : 'Loading live stats…');
+      setText('refresh-time', '…');
+      document.getElementById('refresh-fill').style.width = '100%';
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        const response = await fetch('/stats', { headers: { accept: 'application/json' }, signal: controller.signal });
+        if (!response.ok) throw new Error('stats unavailable');
+        const data = await response.json();
+        setStableCountries(data.stable_by_country);
+        renderStats(data);
+        refresh.dataset.state = 'ready';
+        setText('refresh-label', 'Next stats refresh · every 30 seconds');
+      } catch (_) {
+        refresh.dataset.state = 'error';
+        setText('checked', 'Live data temporarily unavailable');
+        setText('refresh-label', 'Connection interrupted · retrying in');
+      } finally {
+        clearTimeout(timeout);
+        nextRefreshAt = Date.now() + refreshInterval;
+        refreshPending = false;
+        updateCountdown();
+      }
+    }
+    loadStats();
+    setInterval(updateCountdown, 250);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) updateCountdown(); });
+  </script>
+  <script>
+    // Without a configured public_base_url the examples show this server's own origin.
+    document.querySelectorAll('[data-api-origin]').forEach((el) => { if (el.textContent === '{{API_ORIGIN_FALLBACK}}') el.textContent = location.origin; });
+  </script>
+  <!--analytics:begin-->
+  <script>
+    (() => {
+      const measurementId = '{{MEASUREMENT_ID}}';
+      window.dataLayer = window.dataLayer || [];
+      function gtag() { window.dataLayer.push(arguments); }
+      window.gtag = window.gtag || gtag;
+      gtag('js', new Date());
+      gtag('config', measurementId);
+      let activated = false;
+      const activate = () => {
+        if (activated) return;
+        activated = true;
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
+        document.head.appendChild(script);
+      };
+      ['pointerdown', 'click', 'touchstart', 'keydown', 'scroll'].forEach(eventName => window.addEventListener(eventName, activate, { once: true, passive: true }));
+      window.addEventListener('load', () => setTimeout(activate, 3500), { once: true });
+    })();
+  </script>
+  <!--analytics:end-->
+</body>
+</html>

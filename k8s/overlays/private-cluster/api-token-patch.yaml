@@ -1,0 +1,23 @@
+# Internal query API bearer token provisioning.
+#
+# Mounts the operator-created Secret `freeproxyapi-internal-api` (key: token)
+# into the monitor so GET /internal/api/v1/proxies can authenticate callers.
+# Without this volume + a configured internal_api_token_file the internal API
+# does not exist at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: freeproxyapi
+spec:
+  template:
+    spec:
+      containers:
+        - name: freeproxyapi
+          volumeMounts:
+            - name: internal-api
+              mountPath: /internal-api
+              readOnly: true
+      volumes:
+        - name: internal-api
+          secret:
+            secretName: freeproxyapi-internal-api
