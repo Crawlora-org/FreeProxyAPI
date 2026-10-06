@@ -18,7 +18,7 @@ services:
 
   proxy-router:
     # Immutable build timestamp tag; override FREEPROXYAPI_IMAGE to upgrade.
-    image: "${FREEPROXYAPI_IMAGE:-ghcr.io/crawlora-org/freeproxyapi:20260913060344}"
+    image: "${FREEPROXYAPI_IMAGE:-ghcr.io/crawlora-org/freeproxyapi:20261006141420}"
     entrypoint: ["/usr/local/bin/proxy-router"]
     depends_on:
       - gost

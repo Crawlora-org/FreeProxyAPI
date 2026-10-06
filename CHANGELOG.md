@@ -13,6 +13,12 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
+- Image pins in `k8s/base`, `private-cluster`, `cluster-smoke`, `gost-router`
+  and `docker-compose.gost-public.yml` move to `20261006141420`, the latest
+  published build. The `gost-router` overlay relies on `proxy-router` writing
+  its own GOST bootstrap config, which the older pins lack. The `live-local`
+  pin is left alone: the deploy job rewrites it on every deploy, so production
+  renders are unchanged.
 - Google Analytics, when enabled with `analytics_measurement_id`, now loads on
   every page view of the built-in pages. Before, it loaded after the first
   interaction or after 3.5 seconds. There is no consent banner, and Global

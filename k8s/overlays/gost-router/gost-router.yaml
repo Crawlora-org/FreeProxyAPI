@@ -47,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: proxy-router
-          image: ghcr.io/crawlora-org/freeproxyapi:20260911152031
+          image: ghcr.io/crawlora-org/freeproxyapi:20261006141420
           command: ["/usr/local/bin/proxy-router"]
           env:
             - name: GOST_PROXY_USERNAME
