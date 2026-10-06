@@ -97,12 +97,20 @@ context=$(admin config current-context)
 
 # Fail early, before asking for confirmation, if the admin credential is not
 # usable. `auth can-i` answers yes or no for a valid token and errors otherwise.
-preflight=$(admin auth can-i create namespaces 2>&1 || true)
+# The answer is read from stdout only: kubectl may print harmless warnings (for
+# example "resource 'namespaces' is not namespace scoped") on stderr.
+preflight_err=$(mktemp)
+preflight=$(admin auth can-i create namespaces 2>"$preflight_err" || true)
+preflight_msg=$(cat "$preflight_err")
+rm -f "$preflight_err"
 case "$preflight" in
   yes|no) ;;
-  *Unauthorized*|*"must be logged in"*|*"provide credentials"*)
-    die "the admin kubeconfig is not authorized (its token has probably expired). Refresh it first, for example: ./scripts/refresh-kubeconfig.sh (see terraform/README.md), or pass a current --admin-kubeconfig" ;;
-  *) die "cannot reach the cluster with $admin_kubeconfig: $preflight" ;;
+  *)
+    case "$preflight_msg$preflight" in
+      *Unauthorized*|*"must be logged in"*|*"provide credentials"*)
+        die "the admin kubeconfig is not authorized (its token has probably expired). Refresh it first, for example: ./scripts/refresh-kubeconfig.sh (see terraform/README.md), or pass a current --admin-kubeconfig" ;;
+      *) die "cannot reach the cluster with $admin_kubeconfig: ${preflight_msg:-$preflight}" ;;
+    esac ;;
 esac
 
 log "Target cluster : $server"
