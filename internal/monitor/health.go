@@ -378,6 +378,21 @@ func startHealthServer(addr string, runner *Runner) (*healthServer, error) {
 	mux := http.NewServeMux()
 	publicCache := newPublicProxyResponseCache(publicProxyCacheEntries, publicProxyCacheBytes, publicProxyCacheEntrySize, publicProxyCacheTTL, time.Now)
 	publicCache.limitLoads(publicProxyLoadSlots(runner.config.apiRedisPoolSize()))
+	statsCache := newPublicProxyResponseCache(1, publicProxyCacheBytes, publicProxyCacheEntrySize, publicProxyCacheTTL, time.Now)
+	for _, cache := range []*publicProxyResponseCache{publicCache, statsCache} {
+		cache.serveStale(publicProxyStaleWindow)
+		cache.onStale = func() {
+			if runner.metrics != nil {
+				runner.metrics.RecordPublicStaleResponse()
+			}
+		}
+		cache.onRefreshFailure = func(err error) {
+			if runner.metrics != nil {
+				runner.metrics.RecordPublicRefreshFailure()
+			}
+			log.Printf("public response refresh failed; serving the previous response: %v", err)
+		}
+	}
 	pageOpts := pageOptions{
 		BaseURL:                runner.config.PublicBaseURL,
 		MeasurementID:          runner.config.AnalyticsMeasurementID,
@@ -391,7 +406,7 @@ func startHealthServer(addr string, runner *Runner) (*healthServer, error) {
 		runner:        runner,
 		publicLimiter: newIPRateLimiter(publicProxyRequestsPerMin, publicProxyRateWindow),
 		publicCache:   publicCache,
-		statsCache:    newPublicProxyResponseCache(1, publicProxyCacheBytes, publicProxyCacheEntrySize, publicProxyCacheTTL, time.Now),
+		statsCache:    statsCache,
 		statsCacheKey: publicProxyCacheKey(store.ProxyFilter{}, 0),
 		clientIPs:     newClientIPResolver(runner.config.TrustedProxyCIDRs),
 	}
@@ -608,10 +623,12 @@ func (h *healthHandlers) stats(w http.ResponseWriter, r *http.Request) {
 		writeEcho(w, r, h.clientIPs)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), publicProxyRequestTimeout)
 	defer cancel()
 	body, remaining, cached, err := h.statsCache.getOrLoad(ctx, h.statsCacheKey, h.loadStatsBody)
 	if err != nil {
+		h.recordPublicQueryFailure()
+		w.Header().Set("Retry-After", "5")
 		writeJSON(w, r, http.StatusServiceUnavailable, statsPayload{Status: "unavailable", CheckedAt: time.Now().UTC().Format(time.RFC3339)})
 		return
 	}
@@ -647,6 +664,13 @@ func (h *healthHandlers) loadStatsBody(loadCtx context.Context) ([]byte, error) 
 	return append(body, '\n'), nil
 }
 
+// recordPublicQueryFailure counts a public request answered with 503.
+func (h *healthHandlers) recordPublicQueryFailure() {
+	if h.runner.metrics != nil {
+		h.runner.metrics.RecordPublicQueryFailure()
+	}
+}
+
 func (h *healthHandlers) proxies(w http.ResponseWriter, r *http.Request) {
 	setPublicProxyCORS(w)
 	if r.Method == http.MethodOptions {
@@ -668,14 +692,15 @@ func (h *healthHandlers) proxies(w http.ResponseWriter, r *http.Request) {
 	}
 	filter.ClassificationMaxAgeMs = h.runner.config.ClassificationMaxAge.Milliseconds()
 	cacheKey := publicProxyCacheKey(filter, offset)
-	ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), publicProxyRequestTimeout)
 	defer cancel()
 	body, remaining, cached, err := h.publicCache.getOrLoad(ctx, cacheKey, func(loadCtx context.Context) ([]byte, error) {
 		return h.loadProxiesBody(loadCtx, filter, offset)
 	})
 	if err != nil {
+		h.recordPublicQueryFailure()
+		w.Header().Set("Retry-After", "5")
 		if errors.Is(err, errPublicProxyBusy) {
-			w.Header().Set("Retry-After", "5")
 			writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"error": "busy, retry shortly"})
 			return
 		}
@@ -877,9 +902,14 @@ func publicProxyPage(r *http.Request) (store.ProxyFilter, int, error) {
 	return filter, offset, nil
 }
 
+// publicProxyCacheControlFor returns the Cache-Control for a response. A cached
+// response with no TTL left was served stale (see getOrLoad).
 func publicProxyCacheControlFor(remaining time.Duration, cached bool) string {
 	if !cached {
 		return publicProxyCacheControl
+	}
+	if remaining <= 0 {
+		return publicProxyStaleCacheControl
 	}
 	seconds := int(remaining / time.Second)
 	return fmt.Sprintf("public, max-age=%d, s-maxage=%d", seconds, seconds)
@@ -887,6 +917,9 @@ func publicProxyCacheControlFor(remaining time.Duration, cached bool) string {
 
 func writePublicJSONResponse(w http.ResponseWriter, r *http.Request, body []byte, cacheControl string) {
 	w.Header().Set("Content-Type", "application/json")
+	if cacheControl == publicProxyStaleCacheControl {
+		w.Header().Set("Warning", `110 - "Response is Stale"`)
+	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", cacheControl)
 	w.WriteHeader(http.StatusOK)

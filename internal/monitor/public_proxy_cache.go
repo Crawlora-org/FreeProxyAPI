@@ -24,8 +24,12 @@ const (
 	publicProxyCacheTTL       = 30 * time.Second
 	// publicProxyLoadTimeout bounds a shared load. The load is detached from
 	// the cancellation of the request that started it so one disconnecting
-	// client cannot fail every waiter coalesced onto the same flight.
-	publicProxyLoadTimeout = readyzTimeout
+	// client cannot fail every waiter coalesced onto the same flight. It is its
+	// own budget, longer than the 3s /readyz probe: a cache miss that scans a
+	// busy Redis can legitimately take several seconds, the result is then
+	// cached for everyone, and a load that times out is never cached, so
+	// failing at 3s only made the next request pay for the scan again.
+	publicProxyLoadTimeout = 8 * time.Second
 	// publicProxyLoadSlotWait is how long a cache miss waits for a free load
 	// slot before it is shed. It only smooths short bursts; the wait is not
 	// tied to the request context for the same reason loads are detached.
@@ -33,6 +37,19 @@ const (
 	// publicProxyMaxLoadSlots caps concurrent store loads however large the
 	// Redis API pool is configured.
 	publicProxyMaxLoadSlots = 6
+	// publicProxyRequestTimeout bounds how long one request waits for a load:
+	// the load itself, plus the wait for a load slot, plus a margin. It must
+	// exceed publicProxyLoadTimeout, or callers give up before a load that
+	// would have succeeded and been cached.
+	publicProxyRequestTimeout = publicProxyLoadTimeout + publicProxyLoadSlotWait + time.Second
+	// publicProxyStaleWindow is how long past its TTL a cached response may
+	// still be served while a refresh runs or after refreshes fail. Proxy
+	// results already describe "the moment of the last check", so a slightly
+	// old list is far better than a 503.
+	publicProxyStaleWindow = 5 * time.Minute
+	// publicProxyStaleCacheControl is sent with a stale response so clients and
+	// the CDN come back soon instead of holding it for the usual 30 seconds.
+	publicProxyStaleCacheControl = "public, max-age=5, s-maxage=5"
 )
 
 // errPublicProxyBusy reports that too many distinct cache misses are already
@@ -71,7 +88,19 @@ type publicProxyResponseCache struct {
 	// filter is a separate cache key, so without it a client rotating a
 	// filter value turns every request into a store scan.
 	loadSlots chan struct{}
+	// staleTTL, when positive, keeps an expired entry for that long so it can
+	// be served stale (see getOrLoad). Zero drops entries at their TTL.
+	staleTTL time.Duration
+	// onStale and onRefreshFailure, when non-nil, observe a stale response and
+	// a failed background refresh. They run without the cache lock held.
+	onStale          func()
+	onRefreshFailure func(error)
 }
+
+// serveStale lets getOrLoad answer from an expired entry for up to d past its
+// TTL while the entry is refreshed in the background. Call it before the cache
+// serves requests.
+func (c *publicProxyResponseCache) serveStale(d time.Duration) { c.staleTTL = d }
 
 // limitLoads bounds concurrent loads to n (n <= 0 removes the bound). Call it
 // before the cache serves requests.
@@ -202,20 +231,49 @@ func (c *publicProxyResponseCache) getLocked(key [sha256.Size]byte, now time.Tim
 	}
 	entry := element.Value.(*publicProxyCacheEntry)
 	if !now.Before(entry.expiresAt) {
-		c.remove(element)
+		// Expired. Keep it while it can still be served stale; drop it after.
+		if c.staleTTL <= 0 || !now.Before(entry.expiresAt.Add(c.staleTTL)) {
+			c.remove(element)
+		}
 		return nil, 0, false
 	}
 	c.order.MoveToFront(element)
 	return entry.body, entry.expiresAt.Sub(now), true
 }
 
-// getOrLoad coalesces concurrent cache misses for a key. Failed loads are
-// shared with current waiters but are never retained in the response cache.
-// Distinct misses run at most loadSlots at a time; the rest fail fast with
-// errPublicProxyBusy, including when the in-flight table is full.
-// ctx only bounds how long this caller waits; load receives a context that
-// keeps ctx's values but not its cancellation, bounded by
-// publicProxyLoadTimeout, because its result is shared with other callers.
+// staleLocked returns the body of an expired entry that is still inside the
+// stale window. c.mu must be held.
+func (c *publicProxyResponseCache) staleLocked(key [sha256.Size]byte, now time.Time) ([]byte, bool) {
+	if c.staleTTL <= 0 {
+		return nil, false
+	}
+	element, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	entry := element.Value.(*publicProxyCacheEntry)
+	if now.Before(entry.expiresAt) || !now.Before(entry.expiresAt.Add(c.staleTTL)) {
+		return nil, false
+	}
+	c.order.MoveToFront(element)
+	return entry.body, true
+}
+
+// getOrLoad returns the cached response for key, loading it on a miss.
+//
+// Concurrent misses for a key are coalesced. Failed loads are shared with
+// current waiters but are never retained in the response cache. Distinct misses
+// run at most loadSlots at a time; the rest fail fast with errPublicProxyBusy,
+// including when the in-flight table is full. ctx only bounds how long this
+// caller waits; load receives a context that keeps ctx's values but not its
+// cancellation, bounded by publicProxyLoadTimeout, because its result is shared
+// with other callers.
+//
+// With serveStale enabled, an entry past its TTL but inside the stale window is
+// returned immediately while one background refresh replaces it, so a slow or
+// failing store never turns a previously served query into an error. Such a
+// response is reported as cached with a remaining TTL of zero. A key with no
+// entry at all still loads synchronously and can fail.
 func (c *publicProxyResponseCache) getOrLoad(ctx context.Context, key [sha256.Size]byte, load func(context.Context) ([]byte, error)) ([]byte, time.Duration, bool, error) {
 	runLoad := func() ([]byte, error) {
 		release, err := c.acquireLoadSlot()
@@ -232,6 +290,26 @@ func (c *publicProxyResponseCache) getOrLoad(ctx context.Context, key [sha256.Si
 	if body, remaining, ok := c.getLocked(key, now); ok {
 		c.mu.Unlock()
 		return body, remaining, true, nil
+	}
+	if body, ok := c.staleLocked(key, now); ok {
+		if c.inFlight[key] == nil && len(c.inFlight) < c.maxInFlight {
+			flight := &publicProxyCacheFlight{done: make(chan struct{})}
+			c.inFlight[key] = flight
+			go func() {
+				fresh, err := runLoad()
+				if err == nil {
+					c.put(key, fresh)
+				} else if c.onRefreshFailure != nil {
+					c.onRefreshFailure(err)
+				}
+				c.finishFlight(key, flight, fresh, err)
+			}()
+		}
+		c.mu.Unlock()
+		if c.onStale != nil {
+			c.onStale()
+		}
+		return body, 0, true, nil
 	}
 	if flight := c.inFlight[key]; flight != nil {
 		c.mu.Unlock()
@@ -264,13 +342,19 @@ func (c *publicProxyResponseCache) getOrLoad(ctx context.Context, key [sha256.Si
 	if err == nil {
 		c.put(key, body)
 	}
+	c.finishFlight(key, flight, body, err)
+	return body, 0, false, err
+}
+
+// finishFlight publishes a flight's outcome to its waiters and removes it from
+// the in-flight table.
+func (c *publicProxyResponseCache) finishFlight(key [sha256.Size]byte, flight *publicProxyCacheFlight, body []byte, err error) {
 	c.mu.Lock()
 	flight.body = body
 	flight.err = err
 	delete(c.inFlight, key)
 	close(flight.done)
 	c.mu.Unlock()
-	return body, 0, false, err
 }
 
 func (c *publicProxyResponseCache) put(key [sha256.Size]byte, body []byte) {
