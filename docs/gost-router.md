@@ -7,16 +7,35 @@ FreeProxyAPI monitor or Redis, use [`docker-compose.gost-public.yml`](../docker-
 The synchronizer runs in explicit public-API mode and reads validated proxies
 from `https://freeproxyapi.crawlora.net/proxies`.
 
-Prepare the shared runtime file and credentials:
+Prepare the shared runtime file and credentials. The bootstrap file must carry
+the same API credentials you export, because `proxy-router` authenticates its
+GOST reload requests with them:
 
 ```sh
 mkdir -p runtime
-cp examples/gost-public-bootstrap.json runtime/gost.json
 export GOST_API_USERNAME='choose-an-admin-user'
 export GOST_API_PASSWORD='choose-an-admin-password'
 export GOST_PROXY_USERNAME='choose-a-client-user'
 export GOST_PROXY_PASSWORD='choose-a-client-password'
 export GOST_COUNTRIES='DE,SG,US'
+
+python3 - <<'PY'
+import json
+import os
+
+with open('runtime/gost.json', 'w', encoding='utf-8') as handle:
+    json.dump({
+        'api': {
+            'addr': ':18080',
+            'auth': {
+                'username': os.environ['GOST_API_USERNAME'],
+                'password': os.environ['GOST_API_PASSWORD'],
+            },
+        },
+    }, handle, indent=2)
+    handle.write('\n')
+os.chmod('runtime/gost.json', 0o600)
+PY
 ```
 
 Start only GOST and the synchronizer:

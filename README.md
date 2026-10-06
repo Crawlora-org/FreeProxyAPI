@@ -84,6 +84,9 @@ failure.
 
 ## Quick start
 
+You need Docker with Compose for the Compose route, or Go 1.27.1 or newer (see
+`go.mod`) to run from source. Redis is only needed to run `monitor` directly.
+
 ### Parse a local feed
 
 Parsing is local-only: it reads the file and does not make network requests.
@@ -93,7 +96,7 @@ go run ./cmd/freeproxyapi parse -input ./examples/proxies.txt
 ```
 
 Use `-default-scheme` when `host:port` records should use a scheme other than
-`http`. Go 1.27.1 or newer is required.
+`http`.
 
 ### Run with Docker Compose
 
@@ -105,6 +108,15 @@ docker compose up --build
 ```
 
 Then open <http://localhost:8080/>.
+
+**What you will see:** the service starts and the page loads, but `/proxies`
+returns no proxies yet. Compose ships with `network_validation_enabled` set to
+`false`, so the monitor loads the sample feed into Redis but starts no probe
+workers, and a proxy is listed only after it passes several probes
+(`min_samples_for_listing`, default 3). The sample feed also holds
+documentation-range addresses that will never answer. For real results, point
+`sources` at a feed you are allowed to use and turn validation on as described
+next.
 
 To use your own feed with Compose, replace `examples/proxies.txt`, or update
 the feed volume mapping and the `sources` entry in
@@ -159,150 +171,47 @@ The checked-in example config is for Compose, where the Redis hostname is
 use a config whose Redis URL and source paths are reachable from your host, such
 as `redis://127.0.0.1:6379/0` and a local feed path.
 
-Important settings include:
+The settings you will touch first:
 
-- `redis_url` — Redis connection used by monitor workers.
-- `sources` — proxy feeds such as `file:///data/proxies.txt`.
-- `listen_addr` — HTTP listen address; defaults to `:8080`.
-- `admin_listen_addr` — optional second listener (for example
-  `127.0.0.1:9090`) for the operator endpoints `/metrics`, `/report`, and
-  `/internal/api/v1/proxies`, which are then absent from `listen_addr`.
-  `/metrics` exposes feed hostnames and probe settings, so when this is empty
-  (the compatibility default) those endpoints share the public listener and
-  your ingress must not forward them. The checked-in Compose example binds it
-  to the container's loopback; bind `0.0.0.0:9090` and publish the port only
-  on a network you control to scrape it.
-- `network_validation_enabled` — enables proxy checks; disabled by default.
-- `probe_target` — target used when validation is enabled.
-- `probe_expected_body` — optional exact response body (trailing whitespace
-  ignored) required for a standard-mode probe to pass; empty accepts any 2xx.
-- `min_samples_for_listing` (default 3, 1–10), `sample_retest_interval`
-  (default 60s), and `listed_failure_retest_interval` (default 5m) — how many
-  probes a proxy needs before it is listed, and how soon unproven or failing
-  listed proxies are re-probed.
-- `max_records_per_source` (default 250000) and `max_candidates` (default 0 =
-  off) — bound how many endpoints one feed, and all feeds together, can add to
-  Redis; see [Securing Redis and bounding feed intake](docs/deployment.md#securing-redis-and-bounding-feed-intake).
-  `FREEPROXYAPI_REDIS_URL` overrides `redis_url` so a Redis password need not
-  be written to the config file.
-- `workers` and `global_requests_per_minute` — validation concurrency and
-  shared request budget.
-- `redis_pool_size` (default 0 = one connection per 32 workers, 10–32; max
-  256) and `redis_api_pool_size` (default 8, max 64) — per-replica Redis
-  connection caps. Workers and background jobs share the first pool; HTTP
-  reads (`/proxies`, the internal API, `/stats`, `/report`, `/dashboard/data`,
-  `/readyz`) use the second, so busy workers cannot make them wait for a
-  connection. An HTTP read gives up after 2s without a free connection.
-- `geoip_db_path` and `geoip_asn_db_path` — optional GeoIP databases.
-- `public_base_url` — public origin of your deployment (for example
-  `https://proxies.example.com`). Used for the canonical, Open Graph, and
-  code-sample URLs on the built-in pages; leave empty and the page samples
-  show the origin the visitor reached and the canonical tags are omitted.
-- `analytics_measurement_id` — optional Google Analytics 4 ID (`G-XXXXXXXXXX`).
-  Empty by default: the built-in pages load no third-party scripts and send
-  nothing to Google. When set, the pages show a consent banner and load Google
-  Analytics only after the visitor accepts; a Global Privacy Control or Do Not
-  Track signal counts as declining, and an "Analytics settings" link lets
-  visitors change their mind. You are still responsible for any other notice or
-  choice the law where your visitors live requires.
-- `privacy_url` — optional http(s) URL of your privacy notice, linked from the
-  consent banner.
-- `cloudflare_web_analytics` — set to `true` only if Cloudflare Web Analytics
-  auto-install is on for your hostname: it lets the injected beacon script
-  through the pages' Content-Security-Policy. Off by default.
-- `https_probe_target` (default empty = disabled), `https_probe_expected_body`,
-  and `https_probe_every` (default 4, 1–1000) — after roughly one in N
-  successful probes, and only when the global budget grants one more permit,
-  fetch this https URL through the proxy's CONNECT (or SOCKS) tunnel with TLS
-  verification and record `https_ok`/`https_checked_at_ms`. An `https://`
-  proxy whose own TLS handshake fails (non-TLS reply or untrusted certificate)
-  is retried as a plain CONNECT proxy.
-- `control_probe_enabled` (default true), `control_probe_interval` (default
-  60s, at least 1s), and `control_probe_failure_threshold` (default 3, 1–100) —
-  each replica fetches `probe_target` directly; after the threshold of
-  consecutive failures its workers stop claiming work and failed outcomes are
-  released uncommitted until one control check succeeds.
-- `classification_max_age` (default 24h) — age after which anonymity/exit and
-  HTTPS measurements are treated as unknown in `/proxies`. Aggregate `/stats`
-  and metrics breakdowns still count stored values regardless of age.
+- `redis_url` — Redis connection. `FREEPROXYAPI_REDIS_URL` overrides it so a
+  Redis password need not be written to the config file.
+- `sources` — proxy feeds, such as `file:///data/proxies.txt`. At least one is
+  required.
+- `network_validation_enabled` and `probe_target` — validation is off by
+  default; when on, it needs a probe target you operate and may use.
+- `workers` and `global_requests_per_minute` — validation concurrency and the
+  request budget shared by all replicas.
+- `listen_addr` (default `:8080`) and `admin_listen_addr` — the public listener
+  and an optional second one for `/metrics`, `/report`, and the internal API.
+  `/metrics` exposes feed hostnames and probe settings, so when
+  `admin_listen_addr` is empty those endpoints share the public listener and
+  your ingress must not forward them.
+- `public_base_url`, `geoip_db_path`, and `geoip_asn_db_path` — public origin
+  for the built-in pages, and optional GeoIP databases.
+- `analytics_measurement_id` — empty by default, so the built-in pages load no
+  third-party scripts. See [docs/privacy.md](docs/privacy.md) before setting it.
 
-See [`examples/monitor-gost.json`](examples/monitor-gost.json) for a validation
-and GeoIP-enabled configuration reference. Replace its `probe_target` with an
-endpoint you operate and have approval to use before enabling validation.
-Environment variables can override selected runtime settings; the full
-deployment flow is in [docs/deployment.md](docs/deployment.md).
+Every key, its default and valid range, and the environment overrides are in
+the [configuration reference](docs/configuration.md). See
+[`examples/monitor-gost.json`](examples/monitor-gost.json) for a validation and
+GeoIP-enabled example, and replace its `probe_target` with an endpoint you
+operate and have approval to use before enabling validation. The deployment flow
+is in [docs/deployment.md](docs/deployment.md).
 
 ## GOST router
 
-FreeProxyAPI can supply validated proxies to a country-aware GOST router. For a
-complete setup, see [docs/gost-router.md](docs/gost-router.md).
+FreeProxyAPI can supply validated proxies to a country-aware GOST router, either
+from your own monitor or, with no monitor or Redis at all, from the hosted API.
+The sidecar-only recipes, with the bootstrap file, credentials, and filters they
+need, are in [docs/gost-router.md](docs/gost-router.md):
 
-### Sidecar-only with Docker Compose
+- Docker Compose: [`docker-compose.gost-public-sidecar.yml`](docker-compose.gost-public-sidecar.yml)
+- Kubernetes: [`k8s/overlays/gost-public-sidecar`](k8s/overlays/gost-public-sidecar)
 
-This starts only GOST and the `proxy-router` refresh sidecar. It does not start
-the FreeProxyAPI monitor or Redis. Prepare matching GOST API credentials before
-starting it so the sidecar can reload the generated configuration:
-
-```sh
-mkdir -p runtime
-export GOST_API_USERNAME='choose-an-admin-user'
-export GOST_API_PASSWORD='choose-an-admin-password'
-export GOST_PROXY_USERNAME='choose-a-client-user'
-export GOST_PROXY_PASSWORD='choose-a-client-password'
-export FREEPROXYAPI_EXIT_COUNTRY='US'
-export FREEPROXYAPI_MIN_RATIO_PCT='80'
-
-python3 - <<'PY'
-import json
-import os
-
-with open('runtime/gost.json', 'w', encoding='utf-8') as output:
-    json.dump({
-        'api': {
-            'addr': ':18080',
-            'auth': {
-                'username': os.environ['GOST_API_USERNAME'],
-                'password': os.environ['GOST_API_PASSWORD'],
-            },
-        },
-    }, output)
-    output.write('\n')
-os.chmod('runtime/gost.json', 0o600)
-PY
-
-docker compose -f docker-compose.gost-public-sidecar.yml up -d
-docker compose -f docker-compose.gost-public-sidecar.yml logs -f proxy-router
-```
-
-The sidecar reads validated results from
-`https://freeproxyapi.crawlora.net/proxies`, applies the optional filters, and
-refreshes GOST every minute. GOST listens on `127.0.0.1:3128` by default; the
-Compose file also provides country listeners on ports `3129`–`3131`.
-
-### Sidecar-only with Kubernetes
-
-The Kubernetes overlay is also standalone: it creates only a GOST plus
-`proxy-router` Pod and does not run the proxy validator, monitor, or Redis.
-Create its four credentials, review the filter values in
-`k8s/overlays/gost-public-sidecar/deployment.yaml`, then apply it:
-
-```sh
-kubectl apply -f k8s/overlays/gost-public-sidecar/namespace.yaml
-kubectl -n gost-public create secret generic gost-public-auth \
-  --from-literal=proxy-username='choose-a-client-user' \
-  --from-literal=proxy-password='choose-a-client-password' \
-  --from-literal=api-username='choose-an-admin-user' \
-  --from-literal=api-password='choose-an-admin-password'
-kubectl apply -k k8s/overlays/gost-public-sidecar
-kubectl -n gost-public rollout status deployment/gost-public-sidecar --timeout=180s
-```
-
-The Service exposes the authenticated GOST listener on port `3128` and the
-optional country listeners on `3129`–`3131`. For port-forwarded local access:
-
-```sh
-kubectl -n gost-public port-forward svc/gost-public-sidecar 3128:3128
-```
+GOST listens on `127.0.0.1:3128` by default, the unified pool. Country
+listeners start at `3129`, assigned in alphabetical order of the country codes
+(`DE`, `SG`, `US` map to `3129`–`3131` by default). Every listener requires the
+client credentials you configure.
 
 Both recipes use only proxies and target websites you are authorized to access;
 review the [responsible-use guide](docs/responsible-use.md) before increasing
@@ -311,9 +220,11 @@ refresh frequency, result limits, or validation traffic.
 ## Development
 
 ```sh
-go test ./...
-go vet ./...
+make check   # gofmt check, go vet, go test, go test -race
 ```
+
+CI additionally runs `staticcheck` and `govulncheck` and renders the Kubernetes
+manifests. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Container images are published to
 `ghcr.io/crawlora-org/freeproxyapi` by GitHub Actions.
@@ -321,7 +232,9 @@ Container images are published to
 More documentation:
 
 - [HTTP API reference](docs/api.md)
+- [Configuration reference](docs/configuration.md)
 - [Deployment](docs/deployment.md)
+- [New-cluster checklist](docs/new-cluster-checklist.md)
 - [Manual production deploy (break glass)](docs/manual-deploy.md)
 - [Responsible use](docs/responsible-use.md) and [acceptable use](ACCEPTABLE_USE.md)
 - [Privacy](docs/privacy.md)
