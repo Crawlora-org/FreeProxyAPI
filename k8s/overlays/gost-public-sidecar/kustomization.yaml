@@ -8,7 +8,7 @@ resources:
 images:
   - name: ghcr.io/crawlora-org/freeproxyapi
     newName: ghcr.io/crawlora-org/freeproxyapi
-    newTag: "20261006141420"
+    newTag: "20261006180336"
   # Third-party images are pinned by digest, matching k8s/overlays/live-ci.
   - name: gogost/gost
     newName: gogost/gost

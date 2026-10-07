@@ -22,12 +22,14 @@ All notable changes are recorded here. The format follows
   `FREEPROXYAPI_LIMIT` first, so against today's API it makes one request, and
   it continues with `offset` when the API serves smaller pages. A failed page
   keeps the previous GOST config instead of replacing it with a partial pool.
-- Image pins in `k8s/base`, `private-cluster`, `cluster-smoke`, `gost-router`
-  and `docker-compose.gost-public.yml` move to `20261006141420`, the latest
-  published build. The `gost-router` overlay relies on `proxy-router` writing
-  its own GOST bootstrap config, which the older pins lack. The `live-local`
-  pin is left alone: the deploy job rewrites it on every deploy, so production
-  renders are unchanged.
+- Image pins in `k8s/base`, `private-cluster`, `cluster-smoke`, `gost-router`,
+  `gost-public-sidecar` and `docker-compose.gost-public.yml` move to
+  `20261006180336`, the first build whose `proxy-router` follows `/proxies`
+  paging. The `gost-router` overlay also relies on `proxy-router` writing its
+  own GOST bootstrap config, which older pins lack. Against a server capped at
+  100 results per page, the previous router built a config with 100 of 437
+  proxies and this one builds all 437. The `live-local` pin is left alone: the
+  deploy job rewrites it on every deploy, so production renders are unchanged.
 - Google Analytics, when enabled with `analytics_measurement_id`, now loads on
   every page view of the built-in pages. Before, it loaded after the first
   interaction or after 3.5 seconds. There is no consent banner, and Global

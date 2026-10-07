@@ -37,7 +37,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: freeproxyapi
-          image: ghcr.io/crawlora-org/freeproxyapi:20261006141420
+          image: ghcr.io/crawlora-org/freeproxyapi:20261006180336
           args: ["monitor", "-config", "/config/monitor.json"]
           securityContext:
             allowPrivilegeEscalation: false
