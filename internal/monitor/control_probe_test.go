@@ -164,7 +164,7 @@ func TestWorkerDoesNotCommitFailuresWhileControlUnhealthy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runner.workerLoop(ctx)
+		runner.runProbeWorkers(ctx, 1)
 		close(done)
 	}()
 	waitFor(t, 2*time.Second, func() bool { return runner.accuracy.metrics.suppressedOutcomes.Load() == 1 }, "failed outcome was not suppressed")

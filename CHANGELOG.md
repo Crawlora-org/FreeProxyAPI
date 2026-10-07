@@ -13,6 +13,17 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
+- Probe workers no longer poll Redis for work one by one. Each replica runs a
+  single claimer that leases due candidates in batches (up to 64 per call, one
+  Lua script) for exactly the workers that are idle, and hands each claim
+  straight to a waiting worker. Before, a wake-up of the idle pool sent a claim
+  script from every worker (768 per replica on the live profile) for the few
+  candidates due, which was most of Redis's command time. Against a real
+  Redis 7.4 with 768 workers and 6,000 candidates, `EVALSHA` calls fall 82%,
+  `ZRANGEBYSCORE` calls 99% and total commands 36%, with the same completion
+  time. Leases, the control-probe pause and the request budget behave as
+  before, and a claim no worker took is released on shutdown. New metrics
+  `freeproxyapi_claim_batches_total` and `freeproxyapi_claim_empty_total`.
 - The Redis CPU request in `k8s/base/redis.yaml` goes from 100m to 300m. On the
   live cluster Redis ran at about 0.9 core on a node at 107% of allocatable CPU
   and its slow log showed microsecond commands taking 12 ms, so the single

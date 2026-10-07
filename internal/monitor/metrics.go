@@ -77,6 +77,8 @@ type Metrics struct {
 	sourceFetchRetries      atomic.Int64
 	sourceFetchRecovered    atomic.Int64
 	claimsTotal             atomic.Int64
+	claimBatches            atomic.Int64
+	claimEmpty              atomic.Int64
 	reclaimsTotal           atomic.Int64
 	probeResultsTotal       [2]atomic.Int64
 	probeUploadBytes        atomic.Int64
@@ -280,6 +282,12 @@ func (m *Metrics) AddSourceFetchRecovered(n int64) {
 }
 
 func (m *Metrics) RecordClaim() { m.claimsTotal.Add(1) }
+
+// RecordClaimBatch counts claim calls that leased at least one candidate, and
+// RecordClaimEmpty those that found nothing due. Together they are how often
+// this replica asked Redis for work.
+func (m *Metrics) RecordClaimBatch() { m.claimBatches.Add(1) }
+func (m *Metrics) RecordClaimEmpty() { m.claimEmpty.Add(1) }
 
 func (m *Metrics) AddReclaims(n int64) {
 	if n > 0 {
@@ -518,6 +526,8 @@ func (m *Metrics) Handler() http.Handler {
 			{"freeproxyapi_source_fetch_retries_total", "Bounded retry attempts made after transient source fetch failures.", "counter", m.sourceFetchRetries.Load},
 			{"freeproxyapi_source_fetch_recovered_total", "Sources that succeeded after a bounded fetch retry.", "counter", m.sourceFetchRecovered.Load},
 			{"freeproxyapi_claims_total", "Candidates atomically claimed by this replica.", "counter", m.claimsTotal.Load},
+			{"freeproxyapi_claim_batches_total", "Claim calls by this replica that leased at least one candidate.", "counter", m.claimBatches.Load},
+			{"freeproxyapi_claim_empty_total", "Claim calls by this replica that found nothing due.", "counter", m.claimEmpty.Load},
 			{"freeproxyapi_lease_reclaims_total", "Expired leases reclaimed back to pending.", "counter", m.reclaimsTotal.Load},
 			{"freeproxyapi_probe_results_total", "Probe outcomes by outcome label.", "counter", nil},
 			{`freeproxyapi_probe_results_total{outcome="failed"}`, "", "", m.probeResultsTotal[0].Load},
