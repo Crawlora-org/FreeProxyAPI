@@ -13,6 +13,13 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
+- The Redis CPU request in `k8s/base/redis.yaml` goes from 100m to 300m, so
+  Redis keeps more CPU when its node is busy. It is deliberately modest: a
+  request larger than the free CPU on every node leaves the pod `Pending`, and
+  it does not help once Redis uses a whole core. Applying it restarts Redis. See
+  "Redis CPU headroom" in `docs/deployment.md`, which also lists how to tell a
+  saturated Redis. The `RelayAuditPublicAPI*` alert text now points at Redis and
+  node CPU instead of monitor CPU throttling.
 - `/proxies` returns 100 results when `limit` is omitted, zero, negative, or
   invalid (it was up to 1000). A larger explicit `limit` is still honored up to
   the maximum page size. Page with `offset` while `has_more` is true. Page sizes

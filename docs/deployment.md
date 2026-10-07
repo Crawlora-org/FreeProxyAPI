@@ -281,6 +281,44 @@ the cap) and 120,000 probes per minute; Redis is single-threaded and the three p
 have 4.5 allocatable cores, so raise the budget only while
 `freeproxyapi-redis` CPU stays below one core and monitor CPU is not throttled.
 
+### Redis CPU headroom
+
+Redis is one thread, and everything waits on it: the workers' claim and
+complete scripts, and the `/proxies` and `/stats` reads. When that thread is
+saturated, reads queue behind the workers' scripts, so it shows up as slow
+public reads and `503` responses rather than as slow workers. Signs of it:
+
+- `redis-cli --latency`, run inside the Redis pod, reports more than a
+  millisecond or two. A healthy Redis answers in well under 1 ms.
+- `SLOWLOG GET` is full of commands that normally take microseconds, such as
+  `ZRANGEBYSCORE ... LIMIT 0 1` or `EVALSHA`. The process was descheduled or
+  starved while running them.
+- `INFO commandstats` shows `EVALSHA` (the worker claim and complete scripts)
+  taking most of the time and `HMGET` (the `/proxies` read) a small share.
+- `kubectl top pod` shows Redis near one core. It cannot use more than one.
+- `INFO cpu` shows `used_cpu_sys` well above `used_cpu_user`. That points at the
+  platform (the VM's clocksource or virtualization) rather than at Redis.
+
+Two things set how much Redis can do. One is its cost per command, which is a
+property of the platform (CPU generation, clocksource), not a setting here. The
+other is how many commands it is asked to run, and that is the lever this
+repository controls: `workers` and the replica count.
+
+The Redis CPU request (300m) is its weight when its node is full, so it matters
+when the node is the bottleneck. It does not help once Redis is using a whole
+core, and it cannot be raised freely: a request larger than the free CPU on
+every node leaves the Redis pod `Pending` after the StatefulSet rolls, which is
+an outage. Check what is free per node first:
+
+```sh
+kubectl describe nodes | grep -A6 'Allocated resources'
+```
+
+Raise it only after freeing requests elsewhere: fewer monitor replicas or
+`workers`, or another node. Changing the request restarts Redis when deployed.
+It reloads its append-only file, which can take tens of seconds for millions of
+keys, and the startup probe allows ten minutes.
+
 Redis connections are sized explicitly rather than from go-redis's
 `10 * GOMAXPROCS` default. The monitor's 500m CPU limit makes Go's
 container-aware GOMAXPROCS 2, so that default gave each replica a single
