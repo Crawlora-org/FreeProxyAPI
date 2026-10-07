@@ -281,6 +281,36 @@ the cap) and 120,000 probes per minute; Redis is single-threaded and the three p
 have 4.5 allocatable cores, so raise the budget only while
 `freeproxyapi-redis` CPU stays below one core and monitor CPU is not throttled.
 
+### Redis CPU headroom
+
+Redis is one thread, and everything waits on it: the workers' claim and
+complete scripts, and the `/proxies` and `/stats` reads. A busy node therefore
+shows up as slow reads, not as slow workers. On 2026-10-07 the live Redis was
+running at about 0.9 core and 18,000 commands per second on a node at 107% of
+allocatable CPU, and its slow log held `ZRANGEBYSCORE ... LIMIT 0 1` and
+`EVALSHA` calls of 12 ms, commands that take a few microseconds, so the Redis
+process was being descheduled. Some 75% of its command time was `EVALSHA` (the
+worker scripts) and about 0.5% was `HMGET`, the `/proxies` read. The monitor
+pods were not throttled (about 100m used of a 500m limit each), and the HTTP
+read pool had no waits.
+
+The Redis CPU request is its weight when the node is full, so the request
+(300m) should be as large as the cluster can place. It cannot be raised
+freely: the three production nodes have 1500m allocatable each, and before
+raising it check what is free per node:
+
+```sh
+kubectl describe nodes | grep -A6 'Allocated resources'
+```
+
+A request larger than the free CPU on every node leaves the Redis pod `Pending`
+after the StatefulSet rolls, which is an outage. At the time of writing 1150m,
+1150m and 1325m were requested per node, so about 450m is the most Redis could
+ask for. More headroom has to come from elsewhere: fewer monitor replicas or
+`workers` (which also lowers the command rate), or another node. Changing the
+Redis request restarts Redis when deployed, and it reloads its append-only
+file, which is why the startup probe allows ten minutes.
+
 Redis connections are sized explicitly rather than from go-redis's
 `10 * GOMAXPROCS` default. The monitor's 500m CPU limit makes Go's
 container-aware GOMAXPROCS 2, so that default gave each replica a single

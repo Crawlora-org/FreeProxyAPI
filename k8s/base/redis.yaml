@@ -82,9 +82,21 @@ spec:
           # Live RSS was ~1.1Gi (2026-09-14). The request covers steady state;
           # the 4Gi limit covers the 2gb maxmemory dataset plus AOF rewrite
           # fork copy-on-write (observed CoW peak ~447 MB).
+          #
+          # The CPU request is Redis's CPU weight when its node is busy, so it
+          # matters most when the node is full. On 2026-10-07 Redis ran at ~0.9
+          # core and ~18k commands/s on a node at 107% of allocatable CPU, with
+          # a 100m request, and its slow log held 12ms stalls for commands that
+          # take microseconds: the single Redis thread was being descheduled.
+          # 300m triples that weight. It is deliberately not higher: the three
+          # production nodes each have 1.5 CPU allocatable with 1.15-1.3 already
+          # requested, so a request above ~450m fits on no node and the pod
+          # would stay Pending. Raise it only after freeing requests elsewhere
+          # (fewer monitor replicas, or another node); see "Redis CPU headroom"
+          # in docs/deployment.md.
           resources:
             requests:
-              cpu: 100m
+              cpu: 300m
               memory: 1536Mi
             limits:
               memory: 4Gi
