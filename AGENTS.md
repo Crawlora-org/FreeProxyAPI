@@ -36,9 +36,30 @@ For every task that changes repository files, complete these stages in order:
 commit the scoped changes, push the task branch, open or update the pull
 request, wait for required review and checks, merge the accepted change into
 the base branch, and clean up only the task's merged branch and worktree.
-Verify the result after each stage before proceeding. This does not authorize
-deployment, destructive cleanup of unrelated worktrees or branches, or staging
-unrelated changes. Read-only tasks are exempt.
+Verify the result after each stage before proceeding. Do this without being
+asked once the required checks pass; do not leave a finished change unmerged.
+This does not authorize deployment, destructive cleanup of unrelated worktrees
+or branches, or staging unrelated changes. Merging is not deploying: the
+`Publish container` workflow builds and deploys `main` to production, so run it
+only when explicitly asked, and say that it deploys. Read-only tasks are exempt.
+
+## Keep internal notes out of this repository
+
+This repository is public. Everything pushed to it is permanent public record:
+files, commit messages, pull request titles and descriptions, and review
+comments. Do not put these here:
+
+- incident write-ups, investigation notes, or post-mortems;
+- details of a live deployment: node names or flavors, IP addresses, capacity or
+  CPU numbers, current replica or worker counts, deployment history, kubeconfig
+  paths;
+- anything from environment files or Terraform state, and any credential.
+
+Keep those in the private operator repository. Documentation here should explain
+behavior and how anyone who runs the software can diagnose or size things, with
+benchmarks others can reproduce, not the evidence from one deployment. Before
+writing a file, a commit message, or a pull request description, ask whether it
+names something only the operator should know.
 
 ## Production deploys
 

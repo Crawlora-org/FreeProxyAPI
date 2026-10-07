@@ -24,14 +24,13 @@ All notable changes are recorded here. The format follows
   time. Leases, the control-probe pause and the request budget behave as
   before, and a claim no worker took is released on shutdown. New metrics
   `freeproxyapi_claim_batches_total` and `freeproxyapi_claim_empty_total`.
-- The Redis CPU request in `k8s/base/redis.yaml` goes from 100m to 300m. On the
-  live cluster Redis ran at about 0.9 core on a node at 107% of allocatable CPU
-  and its slow log showed microsecond commands taking 12 ms, so the single
-  Redis thread was being descheduled. 300m is the most that fits with room to
-  spare (a request above about 450m fits on no node and would leave the pod
-  Pending). Applying it restarts Redis. See "Redis CPU headroom" in
-  `docs/deployment.md`. The `RelayAuditPublicAPI*` alert text now points at
-  Redis and node CPU instead of monitor CPU throttling, which was not the cause.
+- The Redis CPU request in `k8s/base/redis.yaml` goes from 100m to 300m, so
+  Redis keeps more CPU when its node is busy. It is deliberately modest: a
+  request larger than the free CPU on every node leaves the pod `Pending`, and
+  it does not help once Redis uses a whole core. Applying it restarts Redis. See
+  "Redis CPU headroom" in `docs/deployment.md`, which also lists how to tell a
+  saturated Redis. The `RelayAuditPublicAPI*` alert text now points at Redis and
+  node CPU instead of monitor CPU throttling.
 - `/proxies` returns 100 results when `limit` is omitted, zero, negative, or
   invalid (it was up to 1000). A larger explicit `limit` is still honored up to
   the maximum page size. Page with `offset` while `has_more` is true. Page sizes

@@ -285,42 +285,40 @@ have 4.5 allocatable cores, so raise the budget only while
 
 Redis is one thread, and everything waits on it: the workers' claim and
 complete scripts, and the `/proxies` and `/stats` reads. When that thread is
-busy, reads queue behind it, so a saturated Redis shows up as slow public reads
-rather than slow workers. On 2026-10-07 the live Redis ran at about 0.9 core
-and 18,000 commands per second, a PING from inside its own pod took 11 ms at
-best and 30 ms on average (a healthy Redis answers in under 1 ms), and its slow
-log held `ZRANGEBYSCORE ... LIMIT 0 1` and `EVALSHA` calls of 10 to 55 ms,
-commands that take a few microseconds. About 75% of its command time was
-`EVALSHA` (the worker scripts) and about 0.5% was `HMGET`, the `/proxies` read.
-The monitor pods were not throttled (about 100m used of a 500m limit each), and
-the HTTP read pool had no waits.
+saturated, reads queue behind the workers' scripts, so it shows up as slow
+public reads and `503` responses rather than as slow workers. Signs of it:
 
-Two things set how much Redis can do:
+- `redis-cli --latency`, run inside the Redis pod, reports more than a
+  millisecond or two. A healthy Redis answers in well under 1 ms.
+- `SLOWLOG GET` is full of commands that normally take microseconds, such as
+  `ZRANGEBYSCORE ... LIMIT 0 1` or `EVALSHA`. The process was descheduled or
+  starved while running them.
+- `INFO commandstats` shows `EVALSHA` (the worker claim and complete scripts)
+  taking most of the time and `HMGET` (the `/proxies` read) a small share.
+- `kubectl top pod` shows Redis near one core. It cannot use more than one.
+- `INFO cpu` shows `used_cpu_sys` well above `used_cpu_user`. That points at the
+  platform (the VM's clocksource or virtualization) rather than at Redis.
 
-- Its per-command cost. The nodes are 2-vCPU Xeon E5-2670 v2 VMs on the `xen`
-  clocksource, and Redis spent twice as much CPU in the kernel as in user code
-  (about 55 microseconds per command). A node on the `tsc` clocksource or a
-  newer CPU would lower that, and is a platform choice, not a setting here.
-- How many commands it is asked to run. This is the lever the repository
-  controls: see "How probe workers get work" below.
+Two things set how much Redis can do. One is its cost per command, which is a
+property of the platform (CPU generation, clocksource), not a setting here. The
+other is how many commands it is asked to run, and that is the lever this
+repository controls: see "How probe workers get work" below, `workers`, and the
+replica count.
 
 The Redis CPU request (300m) is its weight when its node is full, so it matters
 when the node is the bottleneck. It does not help once Redis is using a whole
-core, because it cannot use more than one, and it cannot be raised freely: the
-three production nodes have 1500m allocatable each, and before raising it check
-what is free per node:
+core, and it cannot be raised freely: a request larger than the free CPU on
+every node leaves the Redis pod `Pending` after the StatefulSet rolls, which is
+an outage. Check what is free per node first:
 
 ```sh
 kubectl describe nodes | grep -A6 'Allocated resources'
 ```
 
-A request larger than the free CPU on every node leaves the Redis pod `Pending`
-after the StatefulSet rolls, which is an outage. At the time of writing 1150m,
-1150m and 1325m were requested per node, so about 450m is the most Redis could
-ask for. More headroom has to come from elsewhere: fewer monitor replicas or
-`workers`, or another node. Changing the Redis request restarts Redis when
-deployed. It reloads its append-only file, which took about 36 seconds for 2.5
-million keys, and the startup probe allows ten minutes.
+Raise it only after freeing requests elsewhere: fewer monitor replicas or
+`workers`, or another node. Changing the request restarts Redis when deployed.
+It reloads its append-only file, which can take tens of seconds for millions of
+keys, and the startup probe allows ten minutes.
 
 ### How probe workers get work
 
@@ -336,9 +334,8 @@ lease rules are unchanged.
 Before this, every idle worker polled Redis on its own. When the scheduler
 signalled that work was due, all of a replica's idle workers (768 on the live
 profile) woke at once and each ran a claim script for the few candidates that
-were actually due. On 2026-10-07 that was most of Redis's work: `EVALSHA` was
-75% of its command time at about 18,000 commands per second, on a single
-thread. Against a real Redis 7.4 with 768 workers and 6,000 candidates that
+were actually due. With hundreds of workers per replica that became most of
+Redis's work, on a single thread. Against a real Redis 7.4 with 768 workers and 6,000 candidates that
 became due over 15 seconds, the same work took the same 14.6 s with 82% fewer
 `EVALSHA` calls (35,109 to 6,215), 99% fewer `ZRANGEBYSCORE` calls (29,040 to
 181), and 36% fewer commands overall (161,271 to 103,466).

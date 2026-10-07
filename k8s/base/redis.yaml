@@ -84,16 +84,12 @@ spec:
           # fork copy-on-write (observed CoW peak ~447 MB).
           #
           # The CPU request is Redis's CPU weight when its node is busy, so it
-          # matters most when the node is full. On 2026-10-07 Redis ran at ~0.9
-          # core and ~18k commands/s on a node at 107% of allocatable CPU, with
-          # a 100m request, and its slow log held 12ms stalls for commands that
-          # take microseconds: the single Redis thread was being descheduled.
-          # 300m triples that weight. It is deliberately not higher: the three
-          # production nodes each have 1.5 CPU allocatable with 1.15-1.3 already
-          # requested, so a request above ~450m fits on no node and the pod
-          # would stay Pending. Raise it only after freeing requests elsewhere
-          # (fewer monitor replicas, or another node); see "Redis CPU headroom"
-          # in docs/deployment.md.
+          # matters most when the node is full. It does not help once Redis
+          # uses a whole core: it is one thread. Keep it below what fits on a
+          # node. A request larger than the free CPU on every node leaves the
+          # pod Pending after the StatefulSet rolls. Raise it only after
+          # freeing requests elsewhere (fewer monitor replicas, or another
+          # node); see "Redis CPU headroom" in docs/deployment.md.
           resources:
             requests:
               cpu: 300m
