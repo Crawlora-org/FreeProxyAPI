@@ -323,13 +323,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	var workers sync.WaitGroup
 	if r.config.NetworkValidationEnabled {
-		for i := 0; i < r.config.Workers; i++ {
-			workers.Add(1)
-			go func() {
-				defer workers.Done()
-				r.workerLoop(ctx)
-			}()
-		}
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			r.runProbeWorkers(ctx, r.config.Workers)
+		}()
 	}
 
 	refreshTicker := time.NewTicker(r.config.FetchInterval)
@@ -985,17 +983,67 @@ func (r *Runner) recordRefreshError() {
 
 func (r *Runner) nowUTC() string { return r.nowFunc().UTC().Format(time.RFC3339) }
 
-func (r *Runner) workerLoop(ctx context.Context) {
+// runProbeWorkers runs one claimer and n probe workers for this replica until
+// ctx ends. Only the claimer talks to Redis for work: workers that are idle ask
+// it for claims and the claimer leases them in batches (see claimLoop).
+func (r *Runner) runProbeWorkers(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	feed := newClaimFeed(n)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		r.claimLoop(ctx, feed)
+	}()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.workerLoop(ctx, feed)
+		}()
+	}
+	wg.Wait()
+}
+
+// claimFeed connects a replica's claimer to its probe workers. A worker that is
+// idle adds a token to demand and then waits on claims; the claimer sends one
+// claim per token. Each worker has at most one token outstanding, so demand
+// (sized to the worker count) never blocks a worker.
+type claimFeed struct {
+	demand chan struct{}
+	claims chan store.Claim
+}
+
+func newClaimFeed(workers int) *claimFeed {
+	return &claimFeed{demand: make(chan struct{}, workers), claims: make(chan store.Claim)}
+}
+
+// next announces that the caller is idle and waits for the claimer to hand it a
+// claim. It returns false when ctx ends first.
+func (f *claimFeed) next(ctx context.Context) (store.Claim, bool) {
+	select {
+	case f.demand <- struct{}{}:
+	case <-ctx.Done():
+		return store.Claim{}, false
+	}
+	select {
+	case claim := <-f.claims:
+		return claim, true
+	case <-ctx.Done():
+		return store.Claim{}, false
+	}
+}
+
+func (r *Runner) workerLoop(ctx context.Context, feed *claimFeed) {
 	for {
 		if ctx.Err() != nil || !r.waitForControlHealthy(ctx) {
 			return
 		}
-		claim, claimed, stop := r.claimProbeWork(ctx)
-		if stop {
+		claim, ok := feed.next(ctx)
+		if !ok {
 			return
-		}
-		if !claimed {
-			continue
 		}
 		r.metrics.RecordClaim()
 
@@ -1023,44 +1071,147 @@ func (r *Runner) workerLoop(ctx context.Context) {
 	}
 }
 
-// claimProbeWork takes a probe permit and then claims one due candidate for
-// it. claimed reports that the claim is ready to probe; stop reports that the
-// worker should exit. When neither is set the worker loops again.
+// claimLoop is the only goroutine on this replica that asks Redis for work. It
+// claims for exactly as many workers as are idle and waiting, up to
+// store.MaxClaimBatch in one call, and hands each claim to a waiting worker at
+// once, so a lease never ages in a queue.
 //
-// The permit comes first so a spent budget never claims (and then releases,
-// re-scoring to now and losing queue priority) a candidate. Permits come from
-// the replica's local bucket; when no work is due the permit goes back to that
-// bucket, so idle workers cannot exhaust the shared minute budget.
-func (r *Runner) claimProbeWork(ctx context.Context) (claim store.Claim, claimed, stop bool) {
-	permit, allowed, err := r.acquireProbePermit(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return store.Claim{}, false, true
+// This replaces every idle worker polling Redis on its own. With hundreds of
+// workers per replica, each wake-up of the idle pool sent hundreds of claim
+// scripts for the few candidates actually due, and Redis, a single thread,
+// spent most of its time on them. Now an idle replica makes one claim call per
+// wake-up whatever its worker count, and a busy one makes one per batch.
+func (r *Runner) claimLoop(ctx context.Context, feed *claimFeed) {
+	want := 0
+	for ctx.Err() == nil {
+		if want == 0 {
+			select {
+			case <-feed.demand:
+				want++
+			case <-ctx.Done():
+				return
+			}
 		}
-		log.Printf("probe budget failed: %v", err)
-		time.Sleep(time.Second)
-		return store.Claim{}, false, false
+		// Count every other worker that is idle too.
+	drain:
+		for {
+			select {
+			case <-feed.demand:
+				want++
+			default:
+				break drain
+			}
+		}
+		// While the probe origin is failing no work is claimed; waiting workers
+		// simply stay idle.
+		if !r.waitForControlHealthy(ctx) {
+			return
+		}
+		claims, outcome := r.claimProbeBatch(ctx, min(want, store.MaxClaimBatch))
+		switch outcome {
+		case claimStop:
+			return
+		case claimRetry:
+			continue
+		case claimNoBudget:
+			r.waitForBudgetWindow(ctx)
+			continue
+		case claimNoWork:
+			waitForSignal(ctx, r.workAvailable)
+			continue
+		}
+		for i, claim := range claims {
+			select {
+			case feed.claims <- claim:
+				want--
+			case <-ctx.Done():
+				// Shutting down with claims no worker took: release them now
+				// so other replicas need not wait for the leases to expire.
+				for _, undelivered := range claims[i:] {
+					r.releaseClaim(undelivered)
+				}
+				return
+			}
+		}
 	}
-	if !allowed {
-		r.waitForBudgetWindow(ctx)
-		return store.Claim{}, false, false
+}
+
+// claimOutcome says what claimProbeBatch did, so claimLoop knows how to wait.
+type claimOutcome int
+
+const (
+	// claimedWork: at least one candidate was claimed.
+	claimedWork claimOutcome = iota
+	// claimNoWork: nothing is due.
+	claimNoWork
+	// claimNoBudget: the cluster-wide request budget for this minute is spent.
+	claimNoBudget
+	// claimRetry: a Redis error was logged and the caller should try again.
+	claimRetry
+	// claimStop: the context ended.
+	claimStop
+)
+
+// claimProbeBatch takes up to n probe permits and then claims up to that many
+// due candidates in one Redis call.
+//
+// The permits come first so a spent budget never claims (and then releases,
+// re-scoring to now and losing queue priority) a candidate. Permits come from
+// the replica's local bucket; permits not matched by a claim go back to that
+// bucket, so an idle replica cannot exhaust the shared minute budget.
+func (r *Runner) claimProbeBatch(ctx context.Context, n int) ([]store.Claim, claimOutcome) {
+	permits := make([]probePermit, 0, n)
+	giveBack := func(from int) {
+		for _, permit := range permits[from:] {
+			r.returnProbePermit(permit)
+		}
 	}
-	claim, found, err := r.store.ClaimDue(ctx, r.worker, r.nowFunc(), r.config.LeaseTTL)
+	for len(permits) < n {
+		permit, allowed, err := r.acquireProbePermit(ctx)
+		if err != nil {
+			giveBack(0)
+			if ctx.Err() != nil {
+				return nil, claimStop
+			}
+			log.Printf("probe budget failed: %v", err)
+			sleepOrDone(ctx, time.Second)
+			return nil, claimRetry
+		}
+		if !allowed {
+			break
+		}
+		permits = append(permits, permit)
+	}
+	if len(permits) == 0 {
+		return nil, claimNoBudget
+	}
+	claims, err := r.store.ClaimDueBatch(ctx, r.worker, r.nowFunc(), r.config.LeaseTTL, len(permits))
 	if err != nil {
-		r.returnProbePermit(permit)
+		giveBack(0)
 		if ctx.Err() != nil {
-			return store.Claim{}, false, true
+			return nil, claimStop
 		}
 		log.Printf("claim failed: %v", err)
-		time.Sleep(time.Second)
-		return store.Claim{}, false, false
+		sleepOrDone(ctx, time.Second)
+		return nil, claimRetry
 	}
-	if !found {
-		r.returnProbePermit(permit)
-		waitForSignal(ctx, r.workAvailable)
-		return store.Claim{}, false, false
+	giveBack(len(claims))
+	if len(claims) == 0 {
+		r.metrics.RecordClaimEmpty()
+		return nil, claimNoWork
 	}
-	return claim, true, false
+	r.metrics.RecordClaimBatch()
+	return claims, claimedWork
+}
+
+// sleepOrDone sleeps for d or until ctx ends.
+func sleepOrDone(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
 }
 
 // standardProbeFunc returns the production standard-mode probe: the proxy-hop

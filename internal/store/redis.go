@@ -563,6 +563,89 @@ func (s *Redis) ClaimDue(ctx context.Context, worker string, now time.Time, leas
 	return Claim{ID: values[0], URL: values[1], Token: token, Retest: values[2] == "1"}, true, nil
 }
 
+// MaxClaimBatch is the most candidates one ClaimDueBatch call leases. The claim
+// runs as a single Lua script, during which Redis serves nothing else, so the
+// batch is bounded: 64 claims is roughly a millisecond of script time.
+const MaxClaimBatch = 64
+
+// claimBatchScript leases up to ARGV[4] due candidates in one call. ARGV[5..]
+// are the lease tokens, one per claim in the order claimed. It applies the same
+// rules as claimScript to each candidate: a pending entry with no hash, an
+// active lease, or an existing token is dropped without being claimed. The
+// number of pending entries it looks at is bounded (the batch plus 100) so a
+// run of stale entries cannot hold Redis.
+var claimBatchScript = redis.NewScript(`
+local want = tonumber(ARGV[4])
+local claimed = 0
+local popped = 0
+local limit = want + 100
+local out = {}
+while claimed < want and popped < limit do
+  local ids = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, math.min(want - claimed, limit - popped))
+  if #ids == 0 then break end
+  for _, id in ipairs(ids) do
+    popped = popped + 1
+    if redis.call('ZREM', KEYS[1], id) == 1 then
+      local key = KEYS[2] .. id
+      local url = redis.call('HGET', key, 'url')
+      local token = redis.call('HGET', key, 'lease_token') or ''
+      if url and not redis.call('ZSCORE', KEYS[3], id) and token == '' then
+        claimed = claimed + 1
+        redis.call('HSET', key, 'lease_token', ARGV[4 + claimed], 'lease_owner', ARGV[2], 'lease_expires_at_ms', ARGV[3])
+        redis.call('ZADD', KEYS[3], ARGV[3], id)
+        local checked = '0'
+        if (redis.call('HGET', key, 'last_checked_at_ms') or '') ~= '' then checked = '1' end
+        out[#out + 1] = id
+        out[#out + 1] = url
+        out[#out + 1] = checked
+      end
+    end
+  end
+end
+return out
+`)
+
+// ClaimDueBatch atomically leases up to n due candidates (at most MaxClaimBatch)
+// in one Redis call, with the same semantics as n successful ClaimDue calls. It
+// returns fewer than n, or none, when fewer are due. Every claim has its own
+// lease token. One call replaces n round trips, which matters when many workers
+// would otherwise each poll Redis for work.
+func (s *Redis) ClaimDueBatch(ctx context.Context, worker string, now time.Time, leaseTTL time.Duration, n int) ([]Claim, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if n > MaxClaimBatch {
+		n = MaxClaimBatch
+	}
+	tokens := make([]string, n)
+	args := make([]any, 0, 4+n)
+	args = append(args, now.UnixMilli(), worker, now.Add(leaseTTL).UnixMilli(), n)
+	for i := range tokens {
+		token, err := randomToken()
+		if err != nil {
+			return nil, err
+		}
+		tokens[i] = token
+		args = append(args, token)
+	}
+	values, err := claimBatchScript.Run(ctx, s.client,
+		[]string{s.pendingKey(), s.prefix + ":proxy:", s.leasedKey()}, args...).StringSlice()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(values)%3 != 0 || len(values)/3 > n {
+		return nil, fmt.Errorf("unexpected Redis batch claim response")
+	}
+	claims := make([]Claim, 0, len(values)/3)
+	for i := 0; i+2 < len(values); i += 3 {
+		claims = append(claims, Claim{ID: values[i], URL: values[i+1], Token: tokens[i/3], Retest: values[i+2] == "1"})
+	}
+	return claims, nil
+}
+
 // Complete atomically records a probe outcome under the lease token. Validated
 // candidates are rescheduled after RetestPolicy.ValidatedAfter, failed ones
 // after FailedAfter with a consecutive_failures counter; reaching

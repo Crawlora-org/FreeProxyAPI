@@ -158,14 +158,12 @@ func TestProbePermitBucketNeverExceedsLimitAcrossReplicas(t *testing.T) {
 	}
 }
 
-func TestClaimProbeWorkReturnsPermitWhenNoWorkIsDue(t *testing.T) {
+func TestClaimProbeBatchReturnsPermitsWhenNoWorkIsDue(t *testing.T) {
 	clock := newTestClock(time.Date(2026, 9, 14, 10, 0, 5, 0, time.UTC))
 	mini, runner := newBucketTestRunner(t, 100, 10, clock)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	claim, claimed, stop := runner.claimProbeWork(ctx)
-	if claimed || stop || claim.ID != "" {
-		t.Fatalf("empty queue: claim=%+v claimed=%t stop=%t", claim, claimed, stop)
+	claims, outcome := runner.claimProbeBatch(context.Background(), 1)
+	if len(claims) != 0 || outcome != claimNoWork {
+		t.Fatalf("empty queue: claims=%+v outcome=%d, want none and claimNoWork", claims, outcome)
 	}
 	if runner.permits.tokens != 10 {
 		t.Fatalf("local tokens = %d, want the full chunk back", runner.permits.tokens)
@@ -175,7 +173,7 @@ func TestClaimProbeWorkReturnsPermitWhenNoWorkIsDue(t *testing.T) {
 	}
 }
 
-func TestClaimProbeWorkDoesNotClaimOrReleaseWhenBudgetDenied(t *testing.T) {
+func TestClaimProbeBatchDoesNotClaimOrReleaseWhenBudgetDenied(t *testing.T) {
 	clock := newTestClock(time.Date(2026, 9, 14, 10, 0, 5, 0, time.UTC))
 	mini, runner := newBucketTestRunner(t, 1, 1, clock)
 	if _, err := runner.store.Upsert(context.Background(), []string{"http://192.0.2.44:8080"}, clock.now().Add(-time.Hour)); err != nil {
@@ -190,11 +188,9 @@ func TestClaimProbeWorkDoesNotClaimOrReleaseWhenBudgetDenied(t *testing.T) {
 		t.Fatalf("spend budget: ok=%t err=%v", ok, err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_, claimed, stop := runner.claimProbeWork(ctx)
-	if claimed || stop {
-		t.Fatalf("denied budget: claimed=%t stop=%t", claimed, stop)
+	claims, outcome := runner.claimProbeBatch(context.Background(), 1)
+	if len(claims) != 0 || outcome != claimNoBudget {
+		t.Fatalf("denied budget: claims=%+v outcome=%d, want none and claimNoBudget", claims, outcome)
 	}
 	scoreAfter, err := mini.ZScore(bucketTestNS+":pending", members[0])
 	if err != nil || scoreAfter != scoreBefore {
@@ -209,10 +205,10 @@ func TestClaimProbeWorkDoesNotClaimOrReleaseWhenBudgetDenied(t *testing.T) {
 		t.Fatalf("budget denials = %d, want 1", got)
 	}
 
-	// With budget in the next window the same worker claims the candidate.
+	// With budget in the next window the same claimer claims the candidate.
 	clock.advance(time.Minute)
-	claim, claimed, stop := runner.claimProbeWork(context.Background())
-	if !claimed || stop || claim.ID != members[0] {
-		t.Fatalf("next window claim: claim=%+v claimed=%t stop=%t", claim, claimed, stop)
+	claims, outcome = runner.claimProbeBatch(context.Background(), 1)
+	if outcome != claimedWork || len(claims) != 1 || claims[0].ID != members[0] {
+		t.Fatalf("next window claim: claims=%+v outcome=%d", claims, outcome)
 	}
 }

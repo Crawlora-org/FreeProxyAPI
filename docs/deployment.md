@@ -302,7 +302,8 @@ public reads and `503` responses rather than as slow workers. Signs of it:
 Two things set how much Redis can do. One is its cost per command, which is a
 property of the platform (CPU generation, clocksource), not a setting here. The
 other is how many commands it is asked to run, and that is the lever this
-repository controls: `workers` and the replica count.
+repository controls: see "How probe workers get work" below, `workers`, and the
+replica count.
 
 The Redis CPU request (300m) is its weight when its node is full, so it matters
 when the node is the bottleneck. It does not help once Redis is using a whole
@@ -318,6 +319,31 @@ Raise it only after freeing requests elsewhere: fewer monitor replicas or
 `workers`, or another node. Changing the request restarts Redis when deployed.
 It reloads its append-only file, which can take tens of seconds for millions of
 keys, and the startup probe allows ten minutes.
+
+### How probe workers get work
+
+Each replica runs one claimer and `workers` probe workers. Only the claimer asks
+Redis for work. An idle worker tells the claimer it is waiting; the claimer
+takes that many probe permits, leases up to that many due candidates in one
+Redis call (at most 64, one script run of about a millisecond), and hands each
+claim straight to a waiting worker. It never claims ahead of the workers, so a
+lease does not age in a queue, and it releases any claim no worker took when the
+replica shuts down. The control-probe pause, the global request budget and the
+lease rules are unchanged.
+
+Before this, every idle worker polled Redis on its own. When the scheduler
+signalled that work was due, all of a replica's idle workers (768 on the live
+profile) woke at once and each ran a claim script for the few candidates that
+were actually due. With hundreds of workers per replica that became most of
+Redis's work, on a single thread. Against a real Redis 7.4 with 768 workers and 6,000 candidates that
+became due over 15 seconds, the same work took the same 14.6 s with 82% fewer
+`EVALSHA` calls (35,109 to 6,215), 99% fewer `ZRANGEBYSCORE` calls (29,040 to
+181), and 36% fewer commands overall (161,271 to 103,466).
+
+To see it in production, `freeproxyapi_claim_batches_total` counts claim calls
+that leased something and `freeproxyapi_claim_empty_total` those that found
+nothing due. Their sum is how often a replica asked Redis for work; it should
+be a small fraction of `freeproxyapi_claims_total`.
 
 Redis connections are sized explicitly rather than from go-redis's
 `10 * GOMAXPROCS` default. The monitor's 500m CPU limit makes Go's
