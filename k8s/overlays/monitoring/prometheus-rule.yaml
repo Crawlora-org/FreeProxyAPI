@@ -96,7 +96,7 @@ spec:
             severity: warning
           annotations:
             summary: "Public /proxies or /stats is returning 503"
-            description: "{{ $value }} public requests failed in the last 15m with no cached response to fall back on. Check Redis latency, monitor CPU throttling, and freeproxyapi_redis_pool_timeouts_total."
+            description: "{{ $value }} public requests failed in the last 15m with no cached response to fall back on. Check freeproxyapi-redis CPU (near one core means a saturated single thread), node CPU saturation, and freeproxyapi_redis_pool_timeouts_total."
 
         - alert: RelayAuditPublicAPIRefreshFailing
           # Expired public responses are refreshed in the background. While the
@@ -108,7 +108,7 @@ spec:
             severity: warning
           annotations:
             summary: "Public /proxies refreshes are failing; serving older data"
-            description: "{{ $value }} background refreshes failed in the last 15m. Responses are being served stale for up to five minutes. Check Redis latency and monitor CPU throttling."
+            description: "{{ $value }} background refreshes failed in the last 15m. Responses are being served stale for up to five minutes. Check freeproxyapi-redis CPU (near one core means a saturated single thread) and node CPU saturation."
 
         - alert: RelayAuditHTTPSPassRateCollapsed
           expr: |

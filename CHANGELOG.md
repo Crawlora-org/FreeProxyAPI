@@ -13,6 +13,14 @@ All notable changes are recorded here. The format follows
   with any cluster.
 
 ### Changed
+- The Redis CPU request in `k8s/base/redis.yaml` goes from 100m to 300m. On the
+  live cluster Redis ran at about 0.9 core on a node at 107% of allocatable CPU
+  and its slow log showed microsecond commands taking 12 ms, so the single
+  Redis thread was being descheduled. 300m is the most that fits with room to
+  spare (a request above about 450m fits on no node and would leave the pod
+  Pending). Applying it restarts Redis. See "Redis CPU headroom" in
+  `docs/deployment.md`. The `RelayAuditPublicAPI*` alert text now points at
+  Redis and node CPU instead of monitor CPU throttling, which was not the cause.
 - `/proxies` returns 100 results when `limit` is omitted, zero, negative, or
   invalid (it was up to 1000). A larger explicit `limit` is still honored up to
   the maximum page size. Page with `offset` while `has_more` is true. Page sizes
