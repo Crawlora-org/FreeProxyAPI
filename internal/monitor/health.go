@@ -109,14 +109,20 @@ type refreshReport struct {
 }
 
 type validatedSlices struct {
-	ByCountry       map[string]int64 `json:"by_country,omitempty"`
-	StableByCountry map[string]int64 `json:"stable_by_country,omitempty"`
-	ByASN           map[string]int64 `json:"by_asn,omitempty"`
-	ByAnonymity     map[string]int64 `json:"by_anonymity,omitempty"`
-	ByLatencyBand   map[string]int64 `json:"by_latency_band,omitempty"`
-	Stable          int64            `json:"stable"`
-	BandKnown       int64            `json:"-"`
-	GeoMismatch     int64            `json:"geo_mismatch"`
+	UnattributedValidated int64            `json:"-"`
+	UnattributedRouting   int64            `json:"-"`
+	BySource              map[string]int64 `json:"-"`
+	RoutingBySource       map[string]int64 `json:"-"`
+	SourceCountsObserved  bool             `json:"-"`
+	SourceCountsAtMS      int64            `json:"-"`
+	ByCountry             map[string]int64 `json:"by_country,omitempty"`
+	StableByCountry       map[string]int64 `json:"stable_by_country,omitempty"`
+	ByASN                 map[string]int64 `json:"by_asn,omitempty"`
+	ByAnonymity           map[string]int64 `json:"by_anonymity,omitempty"`
+	ByLatencyBand         map[string]int64 `json:"by_latency_band,omitempty"`
+	Stable                int64            `json:"stable"`
+	BandKnown             int64            `json:"-"`
+	GeoMismatch           int64            `json:"geo_mismatch"`
 }
 
 type reportPayload struct {
@@ -454,6 +460,7 @@ func startHealthServer(addr string, runner *Runner) (*healthServer, error) {
 	// listener for compatibility, so the ingress must not forward them.
 	registerAdmin := func(m *http.ServeMux) {
 		m.HandleFunc("/report", h.report)
+		m.HandleFunc("/report/sources", h.sourceReport)
 		m.Handle("/metrics", withAccuracyMetrics(runner.metrics.Handler(), &runner.accuracy.metrics))
 		registerInternalAPI(m, runner, loadAPIToken(runner.config.InternalAPITokenFile))
 	}
@@ -1212,4 +1219,21 @@ func parseBool(raw string) bool {
 	default:
 		return false
 	}
+}
+
+// sourceReport returns bounded aggregate-only source attribution on the operator listener.
+func (h *healthHandlers) sourceReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+	defer cancel()
+	report := h.runner.sourceEfficiencyReport(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodHead {
+		return
+	}
+	_ = json.NewEncoder(w).Encode(report)
 }

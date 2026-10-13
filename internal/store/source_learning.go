@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ const (
 	sourceQualityTTL          = 30 * 24 * time.Hour
 	sourceFailureBaseCooldown = time.Minute
 	sourceFailureMaxCooldown  = time.Hour
+	maxSourceHTTPAttempts     = int64(1000)
+	maxSourceNetworkBytes     = int64(1 << 30)
+	maxSourceCostDurationMS   = int64(24 * time.Hour / time.Millisecond)
+	maxSourceAdmissionBatch   = int64(1_000_000_000)
 	sourceStageScoreStride    = int64(1 << 16)
 	maxSourceStagePriority    = int64((1<<53)-1) / sourceStageScoreStride
 	MaxSourceQualityReadBatch = 512
@@ -30,23 +35,127 @@ var ErrSourceLearningBatchTooLarge = errors.New("source quality read exceeds bat
 // stored fields are zeroed and reported through Corrupt rather than failing a
 // whole refresh-plan read.
 type SourceQuality struct {
-	RefreshFetches      int64
-	RefreshSuccesses    int64
-	FetchFailures       int64
-	ConsecutiveFailures int64
-	Parsed              int64
-	UniqueIncremental   int64
-	DuplicateRecords    int64
-	LastFetchAt         time.Time
-	LastSuccessAt       time.Time
-	CooldownUntil       time.Time
-	ProbeSeen           int64
-	ProbeSamples        float64
-	ProbePasses         float64
-	ProbeUpdatedAt      time.Time
-	ProbeContract       string
-	Corrupt             bool
+	RefreshFetches             int64
+	RefreshSuccesses           int64
+	FetchFailures              int64
+	ConsecutiveFailures        int64
+	Parsed                     int64
+	UniqueIncremental          int64
+	DuplicateRecords           int64
+	LastFetchAt                time.Time
+	LastSuccessAt              time.Time
+	CooldownUntil              time.Time
+	Admitted                   int64
+	AdmissionRefreshes         int64
+	LastAdmitted               int64
+	ZeroAdmissionStreak        int64
+	LastAdmissionAt            time.Time
+	HTTPAttempts               int64
+	NetworkBytes               int64
+	FetchDurationMS            int64
+	FetchCostObservations      int64
+	ProbeSeen                  int64
+	ProbeSamples               float64
+	ProbePasses                float64
+	ProbeCompletions           int64
+	ProbeSuccessfulCompletions int64
+	ProbeDurationMS            int64
+	ProbeUpdatedAt             time.Time
+	ProbeContract              string
+	Corrupt                    bool
 }
+
+// RecordSourceFetchCost adds bounded request-cost observations for one source
+// refresh attempt sequence. The source hash retention is refreshed atomically.
+func (s *Redis) RecordSourceFetchCost(ctx context.Context, sourceID string, httpAttempts, networkBytes, durationMS int64, now time.Time) error {
+	if !validSourceID(sourceID) || now.UnixMilli() <= 0 ||
+		httpAttempts < 0 || httpAttempts > maxSourceHTTPAttempts ||
+		networkBytes < 0 || networkBytes > maxSourceNetworkBytes ||
+		durationMS < 0 || durationMS > maxSourceCostDurationMS {
+		return fmt.Errorf("invalid source fetch cost")
+	}
+	return recordSourceFetchCostScript.Run(ctx, s.client, []string{s.sourceQualityKey(sourceID)},
+		httpAttempts, networkBytes, durationMS, sourceQualityTTL.Milliseconds()).Err()
+}
+
+var recordSourceFetchCostScript = redis.NewScript(`
+local key = KEYS[1]
+local fields = {'http_attempts', 'network_bytes', 'fetch_duration_ms', 'fetch_cost_observations'}
+local increments = {tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), 1}
+local cap = 9007199254740991
+for i = 1, #fields do
+  local raw = redis.call('HGET', key, fields[i]) or '0'
+  local current = tonumber(raw)
+  if not string.match(raw, '^%d+$') or not current or current < 0 or current ~= math.floor(current) or current + increments[i] > cap then
+    return redis.error_reply('invalid source cost counter')
+  end
+end
+for i = 1, #fields do redis.call('HINCRBY', key, fields[i], tostring(increments[i])) end
+redis.call('PEXPIRE', key, ARGV[4])
+return 1
+`)
+
+// RecordSourceAdmissionRefresh records the per-source admission result from
+// one completed global refresh. Callers must include successful participating
+// sources with zero admissions; failed or skipped feeds are omitted. Admitted
+// is counted only by the upsert SADD script, so partial refreshes retain their
+// actual insertions without being mistaken for completed observations.
+func (s *Redis) RecordSourceAdmissionRefresh(ctx context.Context, admittedBySource map[string]int64, now time.Time) error {
+	if len(admittedBySource) > MaxSourceQualityReadBatch || now.UnixMilli() <= 0 {
+		return fmt.Errorf("invalid source admission refresh")
+	}
+	if len(admittedBySource) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(admittedBySource))
+	for id, admitted := range admittedBySource {
+		if !validSourceID(id) || admitted < 0 || admitted > maxSourceAdmissionBatch {
+			return fmt.Errorf("invalid source admission refresh")
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	keys := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)+2)
+	args = append(args, now.UnixMilli(), sourceQualityTTL.Milliseconds())
+	for i, id := range ids {
+		keys[i] = s.sourceQualityKey(id)
+		args = append(args, admittedBySource[id])
+	}
+	return recordSourceAdmissionRefreshScript.Run(ctx, s.client, keys, args...).Err()
+}
+
+var recordSourceAdmissionRefreshScript = redis.NewScript(`
+local cap = 9007199254740991
+for i = 1, #KEYS do
+  local admitted = tonumber(ARGV[i + 2])
+  if not admitted or admitted < 0 or admitted ~= math.floor(admitted) or admitted > 1000000000 then
+    return redis.error_reply('invalid source admission count')
+  end
+  local fields = {'admission_refreshes', 'zero_admission_streak'}
+  local increments = {1, admitted == 0 and 1 or 0}
+  for j = 1, #fields do
+    local raw = redis.call('HGET', KEYS[i], fields[j]) or '0'
+    local current = tonumber(raw)
+    if not string.match(raw, '^%d+$') or not current or current < 0 or current ~= math.floor(current) or current + increments[j] > cap then
+      return redis.error_reply('invalid source admission counter')
+    end
+  end
+end
+for i = 1, #KEYS do
+  local key = KEYS[i]
+  local admitted = tonumber(ARGV[i + 2])
+  redis.call('HINCRBY', key, 'admission_refreshes', 1)
+  if admitted == 0 then
+  redis.call('HINCRBY', key, 'zero_admission_streak', '1')
+  else
+  redis.call('HSET', key, 'zero_admission_streak', '0')
+  end
+  redis.call('HSET', key, 'last_admitted', ARGV[i + 2], 'last_admission_ms', ARGV[1])
+  redis.call('PEXPIRE', key, ARGV[2])
+end
+return 1
+`)
 
 // StableSourceID identifies the exact trimmed feed URL and its parser scheme
 // hint. Equivalent URLs with different query strings stay distinct, as do
@@ -266,9 +375,21 @@ func decodeSourceQuality(values map[string]string, now time.Time) SourceQuality 
 	q.LastFetchAt = timeField("last_fetch_ms")
 	q.LastSuccessAt = timeField("last_success_ms")
 	q.CooldownUntil = timeField("cooldown_until_ms")
+	q.Admitted = intField("admitted")
+	q.AdmissionRefreshes = intField("admission_refreshes")
+	q.LastAdmitted = intField("last_admitted")
+	q.ZeroAdmissionStreak = intField("zero_admission_streak")
+	q.LastAdmissionAt = timeField("last_admission_ms")
+	q.HTTPAttempts = intField("http_attempts")
+	q.NetworkBytes = intField("network_bytes")
+	q.FetchDurationMS = intField("fetch_duration_ms")
+	q.FetchCostObservations = intField("fetch_cost_observations")
 	q.ProbeSeen = intField("probe_seen")
 	q.ProbeSamples = floatField("probe_samples")
 	q.ProbePasses = floatField("probe_passes")
+	q.ProbeCompletions = intField("probe_completions")
+	q.ProbeSuccessfulCompletions = intField("probe_successful_completions")
+	q.ProbeDurationMS = intField("probe_duration_ms")
 	q.ProbeUpdatedAt = timeField("probe_updated_ms")
 	if contract := values["probe_contract"]; contract != "" {
 		if validProbeContract(contract) {
@@ -300,10 +421,11 @@ func validProbeContract(contract string) bool {
 // check in completeScript, before any early discard/delete branch. The caller
 // adds SourceQualityKeyPrefix as KEYS[6], then appends enabled,
 // sampleEvery, halfLifeMS, and the optional 64-hex probe contract as
-// ARGV[28..32]. A contract change resets only sampled probe outcomes before
-// recording the first new-contract result; fetch and refresh counters remain.
-// It samples each source's first completed probe and every Nth retest.
-// The body is constant-time and adds no Redis round trip per probe.
+// ARGV[28..32], followed by probe duration at ARGV[33]. A contract change
+// resets sampled outcomes and committed probe-cost counters before recording
+// the first new-contract result; fetch and refresh counters remain. It samples
+// each source's first completed probe and every Nth retest, while cost counters
+// include every committed probe. The body adds no Redis round trip per probe.
 const SourceProbeLearningLuaSnippet = `
 if ARGV[28] == '1' then
 local source_id = redis.call('HGET', key, 'source_id')
@@ -320,7 +442,9 @@ if source_id and string.len(source_id) == 32 and string.match(source_id, '^[0-9a
     if previous_contract ~= contract then
       redis.call('HSET', quality_key,
         'probe_seen', '0', 'probe_samples', '0', 'probe_passes', '0',
-        'probe_updated_ms', '0', 'probe_contract', contract)
+        'probe_updated_ms', '0', 'probe_completions', '0',
+        'probe_successful_completions', '0', 'probe_duration_ms', '0',
+        'probe_contract', contract)
       contract_changed = true
     end
   end
@@ -344,9 +468,41 @@ if source_id and string.len(source_id) == 32 and string.match(source_id, '^[0-9a
       'probe_updated_ms', now_ms)
     redis.call('PEXPIRE', quality_key, 2592000000)
   end
+  local probe_duration_ms = tonumber(ARGV[33])
+  if string.len(contract) == 64 and string.match(contract, '^[0-9a-f]+$') and
+      probe_duration_ms and probe_duration_ms >= 0 and probe_duration_ms <= 86400000 then
+    local success_increment = status == 'ok' and 1 or 0
+    local cap = 9007199254740991
+    local completion_raw = redis.call('HGET', quality_key, 'probe_completions') or '0'
+    local successful_raw = redis.call('HGET', quality_key, 'probe_successful_completions') or '0'
+    local duration_raw = redis.call('HGET', quality_key, 'probe_duration_ms') or '0'
+    local completion_count = tonumber(completion_raw)
+    local successful_count = tonumber(successful_raw)
+    local duration_total = tonumber(duration_raw)
+    local valid_cost = string.match(completion_raw, '^%d+$') and
+      string.match(successful_raw, '^%d+$') and string.match(duration_raw, '^%d+$') and
+      completion_count and successful_count and duration_total and
+      completion_count >= 0 and successful_count >= 0 and duration_total >= 0 and
+      completion_count == math.floor(completion_count) and successful_count == math.floor(successful_count) and
+      duration_total == math.floor(duration_total) and completion_count + 1 <= cap and
+      successful_count + success_increment <= cap and duration_total + probe_duration_ms <= cap
+    if valid_cost then
+      redis.call('HINCRBY', quality_key, 'probe_completions', '1')
+      if success_increment == 1 then redis.call('HINCRBY', quality_key, 'probe_successful_completions', '1') end
+      redis.call('HINCRBY', quality_key, 'probe_duration_ms', tostring(probe_duration_ms))
+      redis.call('PEXPIRE', quality_key, '2592000000')
+    end
+  end
 end
 end
 `
+
+func sourceProbeDurationArg(durationMS int64) int64 {
+	if durationMS < 0 || durationMS > maxSourceCostDurationMS {
+		return -1
+	}
+	return durationMS
+}
 
 // DecayedSourceYield applies the configured half-life at read time. Invalid or
 // absent values naturally produce the Beta(1,1) prior of 0.5.

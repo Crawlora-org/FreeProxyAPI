@@ -108,6 +108,28 @@ go run ./cmd/freeproxyapi parse -input ./examples/proxies.txt
 Use `-default-scheme` when `host:port` records should use a scheme other than
 `http`.
 
+### Audit published feeds
+
+`feed-audit` fetches and parses feed URLs without probing listed proxies, using
+Redis, or writing files. Supply only feeds you are permitted to retrieve. It
+reports source IDs and aggregate counts/costs; it never prints source URLs,
+proxy endpoints, feed bodies, or raw fetch errors. For example, replace the
+placeholder with a published feed you are authorized to read:
+
+```sh
+printf '[{"url":"https://feeds.example.net/proxies.txt","scheme":"http"}]\n' \
+  | go run ./cmd/freeproxyapi feed-audit -input /dev/stdin
+```
+
+The command accepts up to 128 sources in a 1 MiB JSON input and emits one JSON
+record per input source. Defaults are 20 seconds per source, two concurrent
+fetches, 32 MiB per body, and 100,000 accepted records per source. Concurrency
+is limited to 1–4, timeout to at most 90 seconds, and byte/record limits are
+capped. Reaching a record cap marks that source truncated and ineligible; empty
+parsed sets are also ineligible. In either case its set hash is omitted. See
+[`docs/api.md`](docs/api.md#feed-audit-cli) for the output fields and
+measurement limits.
+
 ### Run with Docker Compose
 
 The included Compose setup starts FreeProxyAPI and Redis. It mounts
@@ -156,7 +178,7 @@ every `/proxies` filter, the response schema, and error codes, is in
 | `/get?probe_content=1` | Stable `GET`/`HEAD` plain-text contract for explicitly configured target profiles; served with `Cache-Control: no-store`. Other `/get` queries keep the caller-IP echo behavior. |
 | `/livez`, `/readyz` | Liveness and readiness (`503` when Redis is unavailable). |
 | `/`, `/dashboard`, `/dashboard/data` | Built-in homepage and operations dashboard (the dashboard needs `prometheus_url`). |
-| `/metrics`, `/report` | Operator endpoints: Prometheus metrics and monitor status. Served on `admin_listen_addr` when set. |
+| `/metrics`, `/report`, `/report/sources` | Operator endpoints: Prometheus metrics, monitor status, and aggregate source quality/cost. `/report/sources` omits source URLs and endpoint data. Served on `admin_listen_addr` when set. |
 | `/internal/api/v1/proxies` | Bearer-token internal API, disabled unless `internal_api_token_file` is set. Served on `admin_listen_addr` when set; keep it on an internal network. |
 
 ```sh
@@ -198,7 +220,8 @@ The settings you will touch first:
 - `workers` and `global_requests_per_minute` — validation concurrency and the
   request budget shared by all replicas.
 - `listen_addr` (default `:8080`) and `admin_listen_addr` — the public listener
-  and an optional second one for `/metrics`, `/report`, and the internal API.
+  and an optional second one for `/metrics`, `/report`, `/report/sources`, and
+  the internal API.
   `/metrics` exposes feed hostnames and probe settings, so when
   `admin_listen_addr` is empty those endpoints share the public listener and
   your ingress must not forward them.

@@ -29,7 +29,7 @@ operate and have approval to use. Read the
 | `sources` | none (required) | Proxy feeds, such as `file:///data/proxies.txt` or an `https://` URL. An optional `scheme@` prefix sets the default scheme for bare `host:port` lines in that feed, for example `socks5@https://example.com/socks5.txt`. |
 | `default_proxy_scheme` | `http` | Scheme for bare `host:port` records whose feed has no `scheme@` prefix. |
 | `listen_addr` | `:8080` | Public HTTP listener. |
-| `admin_listen_addr` | empty | Optional second listener, for example `127.0.0.1:9090`, for `/metrics`, `/report` and `/internal/api/v1/proxies`. When set, those endpoints are absent from `listen_addr`. Must differ from `listen_addr`. |
+| `admin_listen_addr` | empty | Optional second listener, for example `127.0.0.1:9090`, for `/metrics`, `/report`, `/report/sources`, and `/internal/api/v1/proxies`. When set, those endpoints are absent from `listen_addr`. Must differ from `listen_addr`. |
 | `public_base_url` | empty | Public origin of your deployment, such as `https://proxies.example.com`. Used for canonical, Open Graph and code-sample URLs on the built-in pages. When empty, samples show the origin the visitor reached and canonical tags are omitted. |
 | `trusted_proxy_cidrs` | none | CIDRs of ingress that strips caller-supplied forwarding headers and writes trusted ones. Leave empty to identify clients by socket peer. |
 | `internal_api_token_file` | empty | Bearer-token file for the internal API. The API is disabled when this is empty. See [deployment.md](deployment.md#internal-query-api). |
@@ -37,10 +37,11 @@ operate and have approval to use. Read the
 | `public_max_limit` | `1000` (1–1000) | Largest page `/proxies` serves; a larger `limit` is clamped to it. An omitted `limit` is 100, or this value if smaller. Lower it to 100 to cap pages, after `freeproxyapi_public_large_page_requests_total` has stopped growing (see [deployment.md](deployment.md#lowering-the-public-page-size)). |
 
 `/metrics` exposes feed hostnames and probe settings. When `admin_listen_addr`
-is empty (the compatibility default), `/metrics`, `/report` and the internal API
-share the public listener, so your ingress must not forward them. The Compose
-example binds the admin listener to the container's loopback; bind
-`0.0.0.0:9090` and publish the port only on a network you control to scrape it.
+is empty (the compatibility default), `/metrics`, `/report`, `/report/sources`
+and the internal API share the public listener, so your ingress must not forward
+them. The Compose example binds the admin listener to the container's loopback;
+to scrape it, bind `0.0.0.0:9090` and publish the port only on a network you
+control.
 
 ## Feed intake
 
@@ -52,6 +53,8 @@ example binds the admin listener to the container's loopback; bind
 | `max_records_per_source` | `250000` | 1–5,000,000 | Most endpoints one feed can add per refresh; the rest are ignored. |
 | `max_candidates` | `0` (off) | ≥ 0 | When positive, stops new candidates being added once the set reaches this size. |
 | `source_learning_enabled` | `false` | | Opt in to per-feed ranking from sampled refresh and probe outcomes. Supports at most 4,096 configured feeds; see [Source learning](#source-learning). |
+| `source_learning_zero_admission_cooldown` | `0s` (off) | 0–24h | Optional extra cooldown for lower-priority feeds after repeated complete refreshes produce no newly admitted candidates. Protected priority feeds and feeds with a positive observed probe or sufficiently high learned yield are not cooled. |
+| `source_learning_zero_admission_refreshes` | `3` | 3–100 | Consecutive complete, uncapped and untruncated zero-admission refreshes required before the optional cooldown can apply. |
 
 HTTP feeds that return `ETag` or `Last-Modified` can be fetched conditionally.
 A `304 Not Modified` reuses the previously downloaded body and still parses
@@ -79,11 +82,23 @@ exploration. Failed fetches use a separate capped retry cooldown. Learning
 changes source refresh order; it does not change proxy endpoint validation or
 the listing threshold.
 
+The optional `source_learning_zero_admission_cooldown` adds a separate guard
+against repeatedly refreshing low-priority sources that add no new candidate
+IDs. It defaults to disabled (`0s`) and is bounded to 24 hours. The configured
+`source_learning_zero_admission_refreshes` threshold defaults to 3 and must be
+3–100. Only complete successful, uncapped and untruncated refresh passes count
+toward this guard; failed, skipped, truncated, or candidate-cap-affected passes
+are excluded. Sources at fallback priority 10 or better, sources with a positive
+observed probe outcome, and sources whose learned probe yield clears the
+configured minimum are protected. The one-in-ten exploration allowance remains
+in effect for cooled feeds.
+
 The setting is off by default and has no environment override. Quality hashes
 expire after 30 days, and only the active configured catalog is attributed.
 `/report` exposes `source_learning_local`; its `prepared` flag and generation
 distinguish an actual local refresh plan from an instance that has not planned
 a refresh. The local plan is not a cluster-wide source report. See
+[the operator source report](api.md#operator-source-report) and
 [Redis schema](redis-schema.md#source-learning-and-quality-history).
 
 ## Validation

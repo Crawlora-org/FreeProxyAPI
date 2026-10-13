@@ -37,11 +37,12 @@ const (
 	defaultListenAddr          = ":8080"
 	defaultProbeTargetMode     = "standard"
 
-	defaultProbeConnectTimeout = 3 * time.Second
-	defaultRetestJitterPct     = 10
-	maxRetestJitterPct         = 50
-	defaultEvictedBackoffBase  = 2 * time.Hour
-	defaultEvictedBackoffMax   = 168 * time.Hour
+	defaultProbeConnectTimeout             = 3 * time.Second
+	maxSourceLearningZeroAdmissionCooldown = 24 * time.Hour
+	defaultRetestJitterPct                 = 10
+	maxRetestJitterPct                     = 50
+	defaultEvictedBackoffBase              = 2 * time.Hour
+	defaultEvictedBackoffMax               = 168 * time.Hour
 
 	// defaultListedFailureRetest re-probes a failed proxy that is still listed
 	// quickly, so a dead proxy leaves /proxies within minutes, not hours.
@@ -57,10 +58,12 @@ const (
 )
 
 type Config struct {
-	sourceProbeContract   string
-	SourceLearningEnabled bool
-	TargetProfiles        []TargetProfile
-	TargetProbeEvery      int
+	sourceProbeContract                  string
+	SourceLearningEnabled                bool
+	SourceLearningZeroAdmissionCooldown  time.Duration
+	SourceLearningZeroAdmissionRefreshes int
+	TargetProfiles                       []TargetProfile
+	TargetProbeEvery                     int
 
 	RedisURL                 string
 	Namespace                string
@@ -239,9 +242,11 @@ func parseSourceSpec(raw string) (SourceSpec, error) {
 }
 
 type fileConfig struct {
-	SourceLearningEnabled bool            `json:"source_learning_enabled"`
-	TargetProfiles        []TargetProfile `json:"target_profiles"`
-	TargetProbeEvery      int             `json:"target_probe_every"`
+	SourceLearningEnabled                bool            `json:"source_learning_enabled"`
+	SourceLearningZeroAdmissionCooldown  string          `json:"source_learning_zero_admission_cooldown"`
+	SourceLearningZeroAdmissionRefreshes *int            `json:"source_learning_zero_admission_refreshes"`
+	TargetProfiles                       []TargetProfile `json:"target_profiles"`
+	TargetProbeEvery                     int             `json:"target_probe_every"`
 
 	RedisURL                 string   `json:"redis_url"`
 	Namespace                string   `json:"namespace"`
@@ -415,6 +420,13 @@ func LoadConfig(path string) (Config, error) {
 	if config.SourceLearningEnabled && len(config.Sources) > 4096 {
 		return Config{}, fmt.Errorf("source_learning_enabled supports at most 4096 sources")
 	}
+	config.SourceLearningZeroAdmissionRefreshes = 3
+	if file.SourceLearningZeroAdmissionRefreshes != nil {
+		config.SourceLearningZeroAdmissionRefreshes = *file.SourceLearningZeroAdmissionRefreshes
+	}
+	if config.SourceLearningZeroAdmissionRefreshes < 3 || config.SourceLearningZeroAdmissionRefreshes > 100 {
+		return Config{}, fmt.Errorf("source_learning_zero_admission_refreshes must be between 3 and 100")
+	}
 	config.SourceSpecs = make([]SourceSpec, 0, len(config.Sources))
 	for _, raw := range config.Sources {
 		spec, err := parseSourceSpec(raw)
@@ -425,6 +437,12 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if config.DefaultProxyScheme == "" {
 		config.DefaultProxyScheme = "http"
+	}
+	if config.SourceLearningZeroAdmissionCooldown, err = nonnegativeDurationOrDefault(file.SourceLearningZeroAdmissionCooldown, 0); err != nil {
+		return Config{}, fmt.Errorf("source_learning_zero_admission_cooldown: %w", err)
+	}
+	if config.SourceLearningZeroAdmissionCooldown > maxSourceLearningZeroAdmissionCooldown {
+		return Config{}, fmt.Errorf("source_learning_zero_admission_cooldown must not exceed 24h")
 	}
 	if config.ProbeTargetMode == "" {
 		config.ProbeTargetMode = defaultProbeTargetMode
@@ -656,6 +674,17 @@ func durationOrDefault(raw string, fallback time.Duration) (time.Duration, error
 	duration, err := time.ParseDuration(raw)
 	if err != nil || duration <= 0 {
 		return 0, fmt.Errorf("must be a positive Go duration")
+	}
+	return duration, nil
+}
+
+func nonnegativeDurationOrDefault(raw string, fallback time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil || duration < 0 {
+		return 0, fmt.Errorf("must be a non-negative Go duration")
 	}
 	return duration, nil
 }

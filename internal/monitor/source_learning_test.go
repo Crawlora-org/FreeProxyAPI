@@ -173,3 +173,166 @@ func TestSourcePlanDeduplicatesIDs(t *testing.T) {
 		t.Fatalf("deduplicated plan = %+v", plan)
 	}
 }
+
+func TestZeroAdmissionCooldownRequiresFreshFullObservations(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	config := SourceLearningConfig{
+		Enabled: true, MinSamples: 8, LowYieldThreshold: 0.02,
+		ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3,
+	}
+	base := SourceLearningCandidate{ID: "duplicate-feed", FallbackPriority: 20}
+	base.Quality = store.SourceQuality{
+		AdmissionRefreshes:  3,
+		LastAdmitted:        0,
+		ZeroAdmissionStreak: 3,
+		LastAdmissionAt:     now,
+		UniqueIncremental:   0,
+	}
+	if !shouldCoolZeroAdmission(base, now, config) {
+		t.Fatal("three completed zero-admission observations should start cooldown for a cold duplicate")
+	}
+
+	for name, mutate := range map[string]func(*store.SourceQuality){
+		"legacy missing observation count": func(q *store.SourceQuality) { q.AdmissionRefreshes = 0 },
+		"below consecutive threshold":      func(q *store.SourceQuality) { q.AdmissionRefreshes = 2; q.ZeroAdmissionStreak = 2 },
+		"corrupt quality fields":           func(q *store.SourceQuality) { q.Corrupt = true },
+		"latest refresh admitted records": func(q *store.SourceQuality) {
+			q.LastAdmitted = 1
+			q.ZeroAdmissionStreak = 0
+		},
+		"missing timestamp": func(q *store.SourceQuality) { q.LastAdmissionAt = time.Time{} },
+		"future timestamp":  func(q *store.SourceQuality) { q.LastAdmissionAt = now.Add(time.Second) },
+		"expired cooldown":  func(q *store.SourceQuality) { q.LastAdmissionAt = now.Add(-2 * time.Hour) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			mutate(&candidate.Quality)
+			if shouldCoolZeroAdmission(candidate, now, config) {
+				t.Fatal("candidate with untrusted or insufficient observation should fail open")
+			}
+		})
+	}
+	if shouldCoolZeroAdmission(base, now, SourceLearningConfig{Enabled: true, ZeroAdmissionRefreshes: 3}) {
+		t.Fatal("zero cooldown must disable admission cooling")
+	}
+	stricter := config
+	stricter.ZeroAdmissionRefreshes = 5
+	if shouldCoolZeroAdmission(base, now, stricter) {
+		t.Fatal("configured five-refresh threshold must not cool after only three observations")
+	}
+}
+
+func TestZeroAdmissionCooldownProtectsTrustedAndHighQualityFeeds(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	config := SourceLearningConfig{
+		Enabled: true, MinSamples: 8, LowYieldThreshold: 0.02,
+		ZeroAdmissionCooldown: 24 * time.Hour, ZeroAdmissionRefreshes: 3,
+	}
+	quality := store.SourceQuality{
+		AdmissionRefreshes: 6, ZeroAdmissionStreak: 6,
+		LastAdmissionAt: now, LastAdmitted: 0,
+	}
+	if shouldCoolZeroAdmission(SourceLearningCandidate{ID: "trusted", FallbackPriority: 10, Quality: quality}, now, config) {
+		t.Fatal("trusted fallback priority must remain eligible despite duplicate admissions")
+	}
+	quality.ProbeSamples, quality.ProbePasses, quality.ProbeUpdatedAt = 16, 16, now
+	if shouldCoolZeroAdmission(SourceLearningCandidate{ID: "high-quality", FallbackPriority: 20, Quality: quality}, now, config) {
+		t.Fatal("measured source above the existing low-yield threshold must remain eligible")
+	}
+	quality.ProbeSamples, quality.ProbePasses = 128, 0
+	if !shouldCoolZeroAdmission(SourceLearningCandidate{ID: "low-quality", FallbackPriority: 20, Quality: quality}, now, config) {
+		t.Fatal("measured low-yield duplicate should remain eligible for admission cooldown")
+	}
+}
+
+func TestAdmissionCooledSourcesExploreAndRotate(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	config := SourceLearningConfig{
+		Enabled: true, ExplorationInterval: 10, ZeroAdmissionCooldown: time.Hour,
+		ZeroAdmissionRefreshes: 3,
+	}
+	inputs := make([]SourceLearningCandidate, 0, 5)
+	for i := 0; len(inputs) < 5; i++ {
+		id := fmt.Sprintf("admission-cooled-%03d", i)
+		if exploreThisRefresh(id, 0, 10) {
+			inputs = append(inputs, SourceLearningCandidate{
+				ID: id, FallbackPriority: 20,
+				Quality: store.SourceQuality{
+					AdmissionRefreshes: 3, ZeroAdmissionStreak: 3,
+					LastAdmissionAt: now,
+				},
+			})
+		}
+	}
+	selected := make(map[string]struct{}, len(inputs))
+	for epoch := uint64(0); epoch < uint64(len(inputs)); epoch++ {
+		plan := BuildSourceLearningPlan(inputs, epoch*10, now, config)
+		if len(plan) != 1 || !plan[0].Exploration || !plan[0].AdmissionCooled {
+			t.Fatalf("admission exploration epoch %d plan = %+v", epoch, plan)
+		}
+		selected[plan[0].ID] = struct{}{}
+	}
+	if len(selected) != len(inputs) {
+		t.Fatalf("selected %d of %d admission-cooled feeds", len(selected), len(inputs))
+	}
+}
+
+func TestAdmissionExplorationDoesNotStarveActivePlan(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	inputs := make([]SourceLearningCandidate, 80)
+	for i := range inputs {
+		inputs[i] = SourceLearningCandidate{ID: fmt.Sprintf("active-admission-%03d", i), FallbackPriority: 20}
+	}
+	cooled := SourceLearningCandidate{
+		ID: "admission-duplicate", FallbackPriority: 20,
+		Quality: store.SourceQuality{
+			AdmissionRefreshes: 3, ZeroAdmissionStreak: 3, LastAdmissionAt: now,
+		},
+	}
+	inputs = append(inputs, cooled)
+	cfg := SourceLearningConfig{Enabled: true, ExplorationInterval: 10, ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3}
+	var plan []RankedSource
+	for refresh := uint64(0); refresh < 10; refresh++ {
+		plan = BuildSourceLearningPlan(inputs, refresh, now, cfg)
+		if len(plan) > len(inputs)-1 {
+			break
+		}
+	}
+	if len(plan) != len(inputs) || plan[0].ID != cooled.ID || !plan[0].Exploration || !plan[0].AdmissionCooled {
+		t.Fatalf("admission exploration was starved or displaced the active plan: %+v", plan[:min(len(plan), 2)])
+	}
+}
+
+func TestZeroAdmissionCooldownProtectsColdPositiveProbeEvidence(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	q := store.SourceQuality{AdmissionRefreshes: 3, ZeroAdmissionStreak: 3, LastAdmissionAt: now, ProbeSamples: 1, ProbePasses: 1, ProbeUpdatedAt: now}
+	cfg := SourceLearningConfig{Enabled: true, ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3, LowYieldThreshold: 0.02}
+	if shouldCoolZeroAdmission(SourceLearningCandidate{ID: "positive-cold", FallbackPriority: 100, Quality: q}, now, cfg) {
+		t.Fatal("cooled useful cold feed")
+	}
+}
+
+func TestCorruptQualityFailsOpenForEveryLearningCooldown(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	corrupt := store.SourceQuality{
+		Corrupt:      true,
+		ProbeSamples: 128, ProbePasses: 0, ProbeUpdatedAt: now,
+		CooldownUntil:      now.Add(time.Hour),
+		AdmissionRefreshes: 5, ZeroAdmissionStreak: 5, LastAdmissionAt: now,
+	}
+	config := SourceLearningConfig{
+		Enabled: true, MinSamples: 8, LowYieldThreshold: 0.02, LowYieldCooldown: 24 * time.Hour,
+		ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3,
+	}
+	if score, samples, learned := SourceYield(corrupt, now, config); learned || score != 0.5 || samples != 0 {
+		t.Fatalf("corrupt SourceYield = (%0.3f,%0.1f,%t), want unmeasured prior", score, samples, learned)
+	}
+	inputs := []SourceLearningCandidate{
+		{ID: "checked-fallback", FallbackPriority: 10},
+		{ID: "corrupt", FallbackPriority: 80, Quality: corrupt},
+	}
+	plan := BuildSourceLearningPlan(inputs, 1, now, config)
+	if len(plan) != 2 || plan[0].ID != "checked-fallback" || plan[1].ID != "corrupt" || plan[1].Learned || plan[1].Exploration || plan[1].AdmissionCooled {
+		t.Fatalf("corrupt source did not fail open at fallback priority: %+v", plan)
+	}
+}

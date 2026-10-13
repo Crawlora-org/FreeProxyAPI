@@ -109,8 +109,10 @@ type Metrics struct {
 	geoipGauge            atomic.Int64
 	geoMismatch           atomic.Int64
 
-	dynamicMu sync.Mutex
-	dynamic   map[string]int64
+	sourceMu     sync.Mutex
+	sourceGauges map[string]int64
+	dynamicMu    sync.Mutex
+	dynamic      map[string]int64
 
 	targetMu      sync.Mutex
 	targetMetrics map[string]*targetProbeMetrics
@@ -592,6 +594,7 @@ func (m *Metrics) Handler() http.Handler {
 			}
 			fmt.Fprintf(&b, "%s %d\n", s.name, s.value())
 		}
+		m.appendSourceEfficiencyMetrics(&b)
 		m.appendTargetProbeMetrics(&b)
 		m.appendProbeOutcomeMetrics(&b)
 		m.appendSourceFailureMetrics(&b)
@@ -890,5 +893,37 @@ func (m *Metrics) appendProbeOutcomeMetrics(b *strings.Builder) {
 			fmt.Fprintf(b, "freeproxyapi_probe_outcome_duration_seconds_sum{kind=%q,outcome=%q} %s\n", kindLabel, outcomeLabel, strconv.FormatFloat(float64(h.sumNS.Load())/float64(time.Second), 'g', -1, 64))
 			fmt.Fprintf(b, "freeproxyapi_probe_outcome_duration_seconds_count{kind=%q,outcome=%q} %d\n", kindLabel, outcomeLabel, count)
 		}
+	}
+}
+
+// ReplaceSourceGauges atomically swaps leader-only, bounded source snapshots.
+func (m *Metrics) ReplaceSourceGauges(values map[string]int64) {
+	copyValues := make(map[string]int64, len(values))
+	for k, v := range values {
+		copyValues[k] = v
+	}
+	m.sourceMu.Lock()
+	m.sourceGauges = copyValues
+	m.sourceMu.Unlock()
+}
+func (m *Metrics) appendSourceEfficiencyMetrics(b *strings.Builder) {
+	m.sourceMu.Lock()
+	defer m.sourceMu.Unlock()
+	keys := make([]string, 0, len(m.sourceGauges))
+	for k := range m.sourceGauges {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	emitted := make(map[string]bool)
+	for _, k := range keys {
+		family := k
+		if idx := strings.IndexByte(k, '{'); idx >= 0 {
+			family = k[:idx]
+		}
+		if !emitted[family] {
+			fmt.Fprintf(b, "# HELP %s %s\n# TYPE %s %s\n", family, sourceEfficiencyMetricHelp[family], family, sourceEfficiencyMetricType[family])
+			emitted[family] = true
+		}
+		fmt.Fprintf(b, "%s %d\n", k, m.sourceGauges[k])
 	}
 }

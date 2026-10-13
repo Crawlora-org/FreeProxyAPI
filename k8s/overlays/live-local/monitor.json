@@ -943,6 +943,8 @@
   "control_probe_failure_threshold": 3,
   "classification_max_age": "24h",
   "source_learning_enabled": true,
+  "source_learning_zero_admission_cooldown": "1h",
+  "source_learning_zero_admission_refreshes": 3,
   "target_profiles": [
     {
       "name": "crawlora-content",

@@ -400,6 +400,25 @@ local now_ms = tonumber(ARGV[1])
 local last_pair = #ARGV
 local source_id = nil
 if #ARGV % 2 == 0 then source_id = ARGV[#ARGV]; last_pair = #ARGV - 1 end
+local quality_key = nil
+local record_admission = false
+if source_id then
+  quality_key = KEYS[7]
+  -- Efficiency telemetry must never prevent candidate imports. Only enable
+  -- its increment when the existing hash field is a safe integer with room
+  -- for every possible insertion in this bounded batch.
+  local current_raw = redis.pcall('HGET', quality_key, 'admitted')
+  if not (type(current_raw) == 'table' and current_raw.err) then
+    if current_raw == false then current_raw = '0' end
+    local current = tonumber(current_raw)
+    local max_batch = math.floor((last_pair - 1) / 2)
+    if current and string.match(current_raw, '^%d+$') and current >= 0 and
+        current == math.floor(current) and current + max_batch <= 9007199254740991 then
+      record_admission = true
+    end
+  end
+end
+local source_admitted = 0
 for i = 2, last_pair, 2 do
   local id = ARGV[i]
   local key = KEYS[4] .. id
@@ -412,7 +431,9 @@ for i = 2, last_pair, 2 do
   if blocked then
     skipped = skipped + 1
   else
-    added = added + redis.call('SADD', KEYS[1], id)
+    local inserted = redis.call('SADD', KEYS[1], id)
+    added = added + inserted
+    source_admitted = source_admitted + inserted
     redis.call('HSET', key, 'url', ARGV[i + 1])
     if source_id then
       local previous_source = redis.call('HGET', key, 'source_id')
@@ -433,6 +454,10 @@ for i = 2, last_pair, 2 do
       redis.call('ZADD', KEYS[2], ARGV[1], id)
     end
   end
+end
+if source_id and record_admission and source_admitted > 0 then
+  redis.call('HINCRBY', quality_key, 'admitted', tostring(source_admitted))
+  redis.call('PEXPIRE', quality_key, '2592000000')
 end
 return {added, skipped}
 `)
@@ -473,8 +498,11 @@ func (s *Redis) upsertCounts(ctx context.Context, urls []string, now time.Time, 
 		if sourceID != "" {
 			args = append(args, sourceID)
 		}
-		values, err := upsertScript.Run(ctx, s.client,
-			[]string{s.candidatesKey(), s.pendingKey(), s.leasedKey(), s.prefix + ":proxy:", s.tombstonePrefix(), s.SourceQualityKeyPrefix() + "active"}, args...).Int64Slice()
+		keys := []string{s.candidatesKey(), s.pendingKey(), s.leasedKey(), s.prefix + ":proxy:", s.tombstonePrefix(), s.SourceQualityKeyPrefix() + "active"}
+		if sourceID != "" {
+			keys = append(keys, s.sourceQualityKey(sourceID))
+		}
+		values, err := upsertScript.Run(ctx, s.client, keys, args...).Int64Slice()
 		if err != nil {
 			return UpsertCounts{}, err
 		}
@@ -1046,6 +1074,9 @@ type OutcomeMeta struct {
 	// tamper_checked_at_ms); when false the stored tamper fields are unchanged.
 	TamperChecked bool
 	Tampered      bool
+	// SourceProbeDurationMS is the committed probe's elapsed time for source
+	// efficiency learning. Invalid values suppress only this optional metric.
+	SourceProbeDurationMS int64
 }
 
 func (m OutcomeMeta) httpsArgs(now time.Time) (ok, checkedAt string) {
@@ -1096,7 +1127,8 @@ func (s *Redis) Complete(ctx context.Context, claim Claim, now time.Time, policy
 		httpsOK, httpsCheckedAt, meta.HTTPSTunnelScheme,
 		tampered, tamperCheckedAt,
 		exitASN, exitOrg, exitHosting,
-		boolArg(meta.SourceLearning), 16, (7 * 24 * time.Hour).Milliseconds(), encodeTargetProfileUpdate(meta.TargetProfiles), meta.SourceLearningContract).Int()
+		boolArg(meta.SourceLearning), 16, (7 * 24 * time.Hour).Milliseconds(), encodeTargetProfileUpdate(meta.TargetProfiles), meta.SourceLearningContract,
+		sourceProbeDurationArg(meta.SourceProbeDurationMS)).Int()
 	if err != nil {
 		return CompleteResult{}, err
 	}
@@ -1152,13 +1184,19 @@ func boolArg(value bool) string {
 // ValidatedInfo is a slice of one validated candidate's routing-relevant
 // attributes. It carries no endpoint identity.
 type ValidatedInfo struct {
-	Country     string
-	ExitCountry string
-	ASN         string
-	Anonymity   string
-	LatencyMs   int64
-	JitterMs    int64
-	OkRatioPct  int64
+	SourceID        string
+	SuccessStreak   *int64
+	HTTPSOK         *bool
+	HTTPSCheckedAt  int64
+	Tampered        *bool
+	TamperCheckedAt int64
+	Country         string
+	ExitCountry     string
+	ASN             string
+	Anonymity       string
+	LatencyMs       int64
+	JitterMs        int64
+	OkRatioPct      int64
 }
 
 // ValidatedDetails returns country/latency/ratio attributes for every
@@ -1172,14 +1210,16 @@ func (s *Redis) ValidatedDetails(ctx context.Context) ([]ValidatedInfo, error) {
 		for _, id := range ids {
 			cmds = append(cmds, pipe.HMGet(ctx, s.proxyKey(id),
 				"country", "exit_country", "asn", "anonymity",
-				"latency_ewma_ms", "jitter_ewma_ms", "ok_ratio_pct"))
+				"latency_ewma_ms", "jitter_ewma_ms", "ok_ratio_pct",
+				"source_id", "success_streak", "https_ok", "https_checked_at_ms",
+				"tampered", "tamper_checked_at_ms"))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return err
 		}
 		for _, cmd := range cmds {
 			values, err := cmd.Result()
-			if err != nil || len(values) != 7 || allNil(values) {
+			if err != nil || len(values) != 13 || allNil(values) {
 				// All-nil means the hash was deleted (evicted) after the scan;
 				// counting it would report a ghost candidate.
 				continue
@@ -1205,6 +1245,28 @@ func (s *Redis) ValidatedDetails(ctx context.Context) ([]ValidatedInfo, error) {
 			}
 			if v, _ := values[6].(string); v != "" {
 				info.OkRatioPct, _ = strconv.ParseInt(v, 10, 64)
+			}
+			if v, _ := values[7].(string); validSourceID(v) {
+				info.SourceID = v
+			}
+			if v, _ := values[8].(string); v != "" {
+				if streak, parseErr := strconv.ParseInt(v, 10, 64); parseErr == nil && streak >= 0 {
+					info.SuccessStreak = &streak
+				}
+			}
+			if v, _ := values[9].(string); v == "0" || v == "1" {
+				passed := v == "1"
+				info.HTTPSOK = &passed
+			}
+			if v, _ := values[10].(string); v != "" {
+				info.HTTPSCheckedAt, _ = strconv.ParseInt(v, 10, 64)
+			}
+			if v, _ := values[11].(string); v == "0" || v == "1" {
+				tampered := v == "1"
+				info.Tampered = &tampered
+			}
+			if v, _ := values[12].(string); v != "" {
+				info.TamperCheckedAt, _ = strconv.ParseInt(v, 10, 64)
 			}
 			out = append(out, info)
 		}

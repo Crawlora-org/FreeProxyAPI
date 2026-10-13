@@ -18,6 +18,13 @@ type SourceLearningConfig struct {
 	LowYieldThreshold   float64
 	LowYieldCooldown    time.Duration
 	ExplorationInterval uint64
+	// ZeroAdmissionCooldown suppresses stale, low-confidence feeds that have
+	// repeatedly completed a refresh without admitting any new candidates.
+	// Zero disables this policy.
+	ZeroAdmissionCooldown time.Duration
+	// ZeroAdmissionRefreshes is the minimum consecutive full refresh outcomes
+	// required before ZeroAdmissionCooldown can apply.
+	ZeroAdmissionRefreshes int64
 }
 
 type SourceLearningCandidate struct {
@@ -31,18 +38,20 @@ type SourceLearningCandidate struct {
 // store.EncodeSourceStageScore. Cold candidates retain the ordering established
 // by sourcePriority; learned samples affect ordering only after MinSamples.
 type RankedSource struct {
-	ID          string
-	Priority    int64
-	Score       float64
-	Learned     bool
-	Exploration bool
+	ID              string
+	Priority        int64
+	Score           float64
+	Learned         bool
+	Exploration     bool
+	AdmissionCooled bool
 }
 
 type scoredSource struct {
-	candidate SourceLearningCandidate
-	score     float64
-	learned   bool
-	cooled    bool
+	candidate       SourceLearningCandidate
+	score           float64
+	learned         bool
+	cooled          bool
+	admissionCooled bool
 }
 
 // StableSourceID shares store's URL-plus-scheme identity so the refresh planner
@@ -55,6 +64,9 @@ func StableSourceID(rawURL, defaultScheme string) string {
 // its effective sample count. A source remains cold until MinSamples, allowing
 // the configured sourcePriority ordering to remain the fallback.
 func SourceYield(q store.SourceQuality, now time.Time, config SourceLearningConfig) (score, effectiveSamples float64, learned bool) {
+	if q.Corrupt {
+		return 0.5, 0, false
+	}
 	minimum, halfLife := config.normalized()
 	score, effectiveSamples = store.DecayedSourceYield(q, now, halfLife)
 	return score, effectiveSamples, effectiveSamples >= minimum
@@ -80,16 +92,25 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 		}
 		seen[candidate.ID] = struct{}{}
 		score, samples := store.DecayedSourceYield(candidate.Quality, now, halfLife)
-		eligible := config.Enabled && samples >= minimum
+		if candidate.Quality.Corrupt {
+			score, samples = 0.5, 0
+		}
+		eligible := config.Enabled && !candidate.Quality.Corrupt && samples >= minimum
 		cooled := false
-		if config.Enabled {
+		admissionCooled := false
+		if config.Enabled && !candidate.Quality.Corrupt {
 			cooled = candidate.Quality.CooldownUntil.After(now)
 			if eligible && config.LowYieldThreshold > 0 && score < config.LowYieldThreshold && config.LowYieldCooldown > 0 {
 				lowYieldUntil := candidate.Quality.ProbeUpdatedAt.Add(config.LowYieldCooldown)
 				cooled = cooled || lowYieldUntil.After(now)
 			}
+			admissionCooled = shouldCoolZeroAdmission(candidate, now, config)
+			cooled = cooled || admissionCooled
 		}
-		scored = append(scored, scoredSource{candidate: candidate, score: score, learned: eligible, cooled: cooled})
+		scored = append(scored, scoredSource{
+			candidate: candidate, score: score, learned: eligible, cooled: cooled,
+			admissionCooled: admissionCooled,
+		})
 	}
 	if !config.Enabled {
 		sort.SliceStable(scored, func(i, j int) bool {
@@ -156,7 +177,7 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 	appendSource := func(item scoredSource, isExploration bool) {
 		plan = append(plan, RankedSource{
 			ID: item.candidate.ID, Priority: int64(len(plan)), Score: item.score,
-			Learned: item.learned, Exploration: isExploration,
+			Learned: item.learned, Exploration: isExploration, AdmissionCooled: item.admissionCooled,
 		})
 	}
 	exploreIndex := 0
@@ -171,6 +192,39 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 		appendSource(exploring[exploreIndex], true)
 	}
 	return plan
+}
+
+func shouldCoolZeroAdmission(candidate SourceLearningCandidate, now time.Time, config SourceLearningConfig) bool {
+	if !config.Enabled || config.ZeroAdmissionCooldown <= 0 || candidate.FallbackPriority <= 10 {
+		return false
+	}
+	refreshes := config.ZeroAdmissionRefreshes
+	if refreshes < 3 {
+		refreshes = 3
+	}
+	quality := candidate.Quality
+	if quality.Corrupt {
+		return false
+	}
+	// A positive observed pass protects a cold but useful feed from the additional novelty cooldown.
+	if quality.ProbePasses > 0 || quality.ProbeSuccessfulCompletions > 0 {
+		return false
+	}
+	if quality.AdmissionRefreshes < refreshes || quality.ZeroAdmissionStreak < refreshes || quality.LastAdmitted != 0 {
+		return false
+	}
+	if quality.LastAdmissionAt.IsZero() || quality.LastAdmissionAt.After(now) {
+		return false
+	}
+	if !quality.LastAdmissionAt.Add(config.ZeroAdmissionCooldown).After(now) {
+		return false
+	}
+	minimum, halfLife := config.normalized()
+	score, samples := store.DecayedSourceYield(quality, now, halfLife)
+	if samples >= minimum && config.LowYieldThreshold >= 0 && score >= config.LowYieldThreshold {
+		return false
+	}
+	return true
 }
 
 func (c SourceLearningConfig) normalized() (float64, time.Duration) {

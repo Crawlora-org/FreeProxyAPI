@@ -29,6 +29,18 @@ type Fetcher struct {
 	cacheLen int64
 }
 
+// FetchStats describes the work performed by one source stream. NetworkBytes
+// counts response-body bytes returned by the HTTP body reader; it excludes
+// headers, TLS framing, and cached replay bytes. Duration is wall-clock time
+// for the whole StreamMeasured call, including visitor parsing/staging time,
+// rather than HTTP latency alone.
+type FetchStats struct {
+	HTTPAttempts int64
+	NetworkBytes int64
+	Duration     time.Duration
+	CacheHit     bool
+}
+
 const (
 	feedCacheMaxBytes      int64 = 16 << 20
 	feedCacheMaxEntries          = 128
@@ -108,27 +120,38 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 // larger feeds stream without caching. The callback must consume the reader
 // before returning.
 func (f *Fetcher) Stream(ctx context.Context, rawURL string, visit func(io.Reader) error) error {
+	_, err := f.StreamMeasured(ctx, rawURL, visit)
+	return err
+}
+
+// StreamMeasured fetches a source and visits its bounded body, returning
+// per-call transport and wall-clock measurements. Duration includes the
+// visitor's parsing or staging work; NetworkBytes counts only HTTP response
+// body bytes actually read, not wire/TLS/header bytes or cached replay bytes.
+func (f *Fetcher) StreamMeasured(ctx context.Context, rawURL string, visit func(io.Reader) error) (stats FetchStats, retErr error) {
+	started := time.Now()
+	defer func() { stats.Duration = time.Since(started) }()
 	u, err := url.ParseRequestURI(strings.TrimSpace(rawURL))
 	if err != nil {
-		return fmt.Errorf("parse source URL: %w", err)
+		return stats, fmt.Errorf("parse source URL: %w", err)
 	}
 	if visit == nil {
-		return fmt.Errorf("source visitor is required")
+		return stats, fmt.Errorf("source visitor is required")
 	}
 	switch u.Scheme {
 	case "file":
 		file, err := os.Open(u.Path)
 		if err != nil {
-			return fmt.Errorf("open source file: %w", err)
+			return stats, fmt.Errorf("open source file: %w", err)
 		}
 		defer file.Close()
-		return f.streamBounded(file, visit)
+		return stats, f.streamBounded(file, visit)
 	case "http", "https":
 		cacheKey := strings.TrimSpace(rawURL)
 		cached := f.getCached(cacheKey)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 		if err != nil {
-			return err
+			return stats, err
 		}
 		// Some public feed providers, including Geonode, reject the default
 		// curl-like agent even though their endpoint is public.
@@ -142,26 +165,28 @@ func (f *Fetcher) Stream(ctx context.Context, rawURL string, visit func(io.Reade
 				req.Header.Set("If-Modified-Since", cached.lastModified)
 			}
 		}
+		stats.HTTPAttempts++
 		response, err := f.client.Do(req)
 		if err != nil {
-			return fmt.Errorf("fetch source: %w", err)
+			return stats, fmt.Errorf("fetch source: %w", err)
 		}
 		defer response.Body.Close()
 		if response.StatusCode == http.StatusNotModified {
 			if cached == nil {
-				return fmt.Errorf("source returned 304 without a cached body")
+				return stats, fmt.Errorf("source returned 304 without a cached body")
 			}
+			stats.CacheHit = true
 			if err := ctx.Err(); err != nil {
-				return err
+				return stats, err
 			}
 			err := f.streamBounded(&contextReader{ctx: ctx, reader: bytes.NewReader(cached.body)}, visit)
 			if err != nil {
-				return err
+				return stats, err
 			}
-			return ctx.Err()
+			return stats, ctx.Err()
 		}
 		if response.StatusCode != http.StatusOK {
-			return &HTTPStatusError{
+			return stats, &HTTPStatusError{
 				StatusCode: response.StatusCode,
 				Status:     response.Status,
 				RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"), time.Now()),
@@ -176,37 +201,49 @@ func (f *Fetcher) Stream(ctx context.Context, rawURL string, visit func(io.Reade
 		canCapture := (etag != "" || lastModified != "") &&
 			(response.ContentLength < 0 || response.ContentLength <= captureLimit)
 		if !canCapture {
-			err := f.streamBounded(response.Body, visit)
+			err := f.streamBounded(&countingReader{reader: response.Body, bytes: &stats.NetworkBytes}, visit)
 			if err != nil {
-				return err
+				return stats, err
 			}
 			f.invalidateCached(cacheKey)
-			return nil
+			return stats, nil
 		}
-		captured := &captureReader{reader: &limitReader{reader: response.Body, max: f.maxBytes}, max: captureLimit, cacheable: true}
+		counted := &countingReader{reader: response.Body, bytes: &stats.NetworkBytes}
+		captured := &captureReader{reader: &limitReader{reader: counted, max: f.maxBytes}, max: captureLimit, cacheable: true}
 		err = visit(captured)
 		if err != nil {
 			if captured.exceeded {
-				return captured.limitError(f.maxBytes)
+				return stats, captured.limitError(f.maxBytes)
 			}
-			return err
+			return stats, err
 		}
 		if captured.exceeded {
-			return captured.limitError(f.maxBytes)
+			return stats, captured.limitError(f.maxBytes)
 		}
 		if !captured.eof {
 			f.invalidateCached(cacheKey)
-			return nil
+			return stats, nil
 		}
 		if captured.cacheable {
 			f.putCached(cacheKey, captured.body, etag, lastModified)
 		} else {
 			f.invalidateCached(cacheKey)
 		}
-		return nil
+		return stats, nil
 	default:
-		return fmt.Errorf("unsupported source URL scheme %q", u.Scheme)
+		return stats, fmt.Errorf("unsupported source URL scheme %q", u.Scheme)
 	}
+}
+
+type countingReader struct {
+	reader io.Reader
+	bytes  *int64
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	*r.bytes += int64(n)
+	return n, err
 }
 
 func validCacheValidator(value string) string {
