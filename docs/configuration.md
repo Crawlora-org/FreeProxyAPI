@@ -91,7 +91,11 @@ toward this guard; failed, skipped, truncated, or candidate-cap-affected passes
 are excluded. Sources at fallback priority 10 or better, sources with a positive
 observed probe outcome, and sources whose learned probe yield clears the
 configured minimum are protected. The one-in-ten exploration allowance remains
-in effect for cooled feeds.
+in effect for cooled feeds. Any actual new candidate insertion clears that
+source's zero-admission streak immediately, including an insertion made before
+a later partial, truncated, or capped pass ends. This immediate reset does not
+count as a completed observation or update the last full-refresh admission
+fields; duplicate or tombstone-blocked records do not reset the streak.
 
 The setting is off by default and has no environment override. Quality hashes
 expire after 30 days, and only the active configured catalog is attributed.

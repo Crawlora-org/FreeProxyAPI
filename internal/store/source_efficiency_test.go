@@ -118,6 +118,69 @@ func TestSourceAdmissionCountsOnlyActualInsertionsAndTracksCompletedRefreshes(t 
 	}
 }
 
+func TestPartialPositiveUpsertResetsStreakWithoutRecordingFullRefresh(t *testing.T) {
+	ctx := context.Background()
+	_, s := newTestStore(t, "source-admission-partial-positive:v1")
+	now := time.Unix(1_800_000_000, 0)
+	id := StableSourceID("https://feeds.example/partial-positive", "http")
+	if err := s.SetActiveLearningSources(ctx, []string{id}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := s.RecordSourceAdmissionRefresh(ctx, map[string]int64{id: 0}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quality, err := s.LoadSourceQuality(ctx, []string{id}, now.Add(3*time.Minute))
+	if err != nil || quality[id].ZeroAdmissionStreak != 3 || quality[id].AdmissionRefreshes != 3 {
+		t.Fatalf("pre-upsert admission state=%+v err=%v", quality[id], err)
+	}
+
+	counts, err := s.UpsertPrioritizedSourceCounts(ctx, []string{"http://new-source.example:8080"}, now.Add(4*time.Minute), id)
+	if err != nil || counts.Added != 1 {
+		t.Fatalf("partial positive upsert=%+v err=%v", counts, err)
+	}
+	quality, err = s.LoadSourceQuality(ctx, []string{id}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := quality[id]
+	if got.Admitted != 1 || got.ZeroAdmissionStreak != 0 || got.AdmissionRefreshes != 3 || got.LastAdmitted != 0 || !got.LastAdmissionAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("partial upsert should reset only zero history, got %+v", got)
+	}
+}
+
+func TestDuplicateAndTombstoneOnlyUpsertsDoNotResetZeroAdmissionStreak(t *testing.T) {
+	ctx := context.Background()
+	mini, s := newTestStore(t, "source-admission-nonpositive-upsert:v1")
+	now := time.Unix(1_800_000_000, 0)
+	id := StableSourceID("https://feeds.example/nonpositive", "http")
+	if err := s.SetActiveLearningSources(ctx, []string{id}); err != nil {
+		t.Fatal(err)
+	}
+	existing := "http://already-present.example:8080"
+	if _, err := s.UpsertPrioritizedSourceCounts(ctx, []string{existing}, now, id); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := s.RecordSourceAdmissionRefresh(ctx, map[string]int64{id: 0}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocked := "http://tombstoned.example:8080"
+	if err := mini.Set(s.tombstoneKey(proxyID(blocked)), fmt.Sprintf("1:%d", now.Add(time.Hour).UnixMilli())); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.UpsertPrioritizedSourceCounts(ctx, []string{existing, blocked}, now.Add(4*time.Minute), id)
+	if err != nil || counts.Added != 0 || counts.Tombstoned != 1 {
+		t.Fatalf("duplicate/tombstoned upsert=%+v err=%v", counts, err)
+	}
+	quality, err := s.LoadSourceQuality(ctx, []string{id}, now.Add(4*time.Minute))
+	if err != nil || quality[id].ZeroAdmissionStreak != 3 || quality[id].AdmissionRefreshes != 3 || quality[id].LastAdmitted != 0 || !quality[id].LastAdmissionAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("nonpositive upsert changed completed history: quality=%+v err=%v", quality[id], err)
+	}
+}
+
 func TestCorruptAdmissionTelemetryNeverBlocksCandidateImports(t *testing.T) {
 	ctx := context.Background()
 	mini, s := newTestStore(t, "source-admission-corrupt:v1")
@@ -131,16 +194,19 @@ func TestCorruptAdmissionTelemetryNeverBlocksCandidateImports(t *testing.T) {
 		name       string
 		seed       func(key string)
 		wantStored string
+		wantStreak string
 	}{
 		{
 			name:       "malformed counter",
-			seed:       func(key string) { mini.HSet(key, "admitted", "not-an-integer") },
+			seed:       func(key string) { mini.HSet(key, "admitted", "not-an-integer", "zero_admission_streak", "3") },
 			wantStored: "not-an-integer",
+			wantStreak: "0",
 		},
 		{
 			name:       "counter at exact cap",
-			seed:       func(key string) { mini.HSet(key, "admitted", fmt.Sprint(int64(1<<53-1))) },
+			seed:       func(key string) { mini.HSet(key, "admitted", fmt.Sprint(int64(1<<53-1)), "zero_admission_streak", "3") },
 			wantStored: fmt.Sprint(int64(1<<53 - 1)),
+			wantStreak: "0",
 		},
 		{
 			name: "wrong-type quality key",
@@ -150,6 +216,7 @@ func TestCorruptAdmissionTelemetryNeverBlocksCandidateImports(t *testing.T) {
 				}
 			},
 			wantStored: "legacy non-hash value",
+			wantStreak: "",
 		},
 	}
 	for index, tc := range tests {
@@ -181,6 +248,11 @@ func TestCorruptAdmissionTelemetryNeverBlocksCandidateImports(t *testing.T) {
 			}
 			if err != nil || stored != tc.wantStored {
 				t.Fatalf("corrupt admission counter changed: got=%q err=%v want=%q", stored, err, tc.wantStored)
+			}
+			if tc.name != "wrong-type quality key" {
+				if got := mini.HGet(idKey, "zero_admission_streak"); got != tc.wantStreak {
+					t.Fatalf("zero admission streak=%q, want reset to %q", got, tc.wantStreak)
+				}
 			}
 		})
 	}

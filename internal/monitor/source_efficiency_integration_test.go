@@ -73,6 +73,48 @@ func TestSourceAdmissionCooldownUsesStoredFullRefreshObservations(t *testing.T) 
 	}
 }
 
+func TestPartialPositiveAdmissionClearsCooldownWithoutFullRefreshObservation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	runner, _, clock := newSourceEfficiencyTestRunner(t, []SourceSpec{{URL: "file:///synthetic/partial-admission", Scheme: "http"}})
+	*clock = now
+	runner.config.SourceLearningZeroAdmissionCooldown = time.Hour
+	runner.config.SourceLearningZeroAdmissionRefreshes = 3
+	id := runner.sourceID(runner.config.SourceSpecs[0])
+	if err := runner.store.SetActiveLearningSources(ctx, []string{id}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		if err := runner.store.RecordSourceAdmissionRefresh(ctx, map[string]int64{id: 0}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	quality, err := runner.store.LoadSourceQuality(ctx, []string{id}, now.Add(3*time.Minute))
+	if err != nil || quality[id].ZeroAdmissionStreak != 3 || quality[id].AdmissionRefreshes != 3 {
+		t.Fatalf("pre-upsert quality=%+v err=%v", quality[id], err)
+	}
+	// This direct source-aware upsert models a partial/capped pass: it commits
+	// one genuine SADD but deliberately records no completed-refresh observation.
+	counts, err := runner.store.UpsertPrioritizedSourceCounts(ctx, []string{"http://partial-new.example:8080"}, now.Add(4*time.Minute), id)
+	if err != nil || counts.Added != 1 {
+		t.Fatalf("partial admission=%+v err=%v", counts, err)
+	}
+	quality, err = runner.store.LoadSourceQuality(ctx, []string{id}, now.Add(4*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quality[id].Admitted != 1 || quality[id].ZeroAdmissionStreak != 0 || quality[id].AdmissionRefreshes != 3 || quality[id].LastAdmitted != 0 || !quality[id].LastAdmissionAt.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("partial admission changed full-observation fields: %+v", quality[id])
+	}
+
+	config := SourceLearningConfig{Enabled: true, MinSamples: 8, ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3, ExplorationInterval: 10}
+	plan := BuildSourceLearningPlan([]SourceLearningCandidate{{ID: id, FallbackPriority: 20, Quality: quality[id]}}, 1, now.Add(4*time.Minute), config)
+	if len(plan) != 1 || plan[0].AdmissionCooled {
+		t.Fatalf("source with a partial positive admission remained cooled: %+v", plan)
+	}
+}
+
 func TestCappedRefreshDoesNotRecordAdmissionObservation(t *testing.T) {
 	runner, mini, _ := capRunner(t, `, "max_candidates": 1`, feedLines("cap", 12))
 	runner.config.MaxCandidates = 0
