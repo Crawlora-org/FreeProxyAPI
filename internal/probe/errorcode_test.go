@@ -42,6 +42,7 @@ func TestClassifyErrorMessages(t *testing.T) {
 		{"status text only", Result{Error: "echo endpoint returned unexpected HTTP status 502"}, CodeStatus5xx},
 		{"body", Result{StatusCode: 200, Error: "unexpected response body"}, CodeUnexpectedBody},
 		{"echo body", Result{StatusCode: 200, Error: "echo response contained no caller IP"}, CodeUnexpectedBody},
+		{"echo verification", Result{StatusCode: 200, Error: "echo response failed nonce verification"}, CodeUnexpectedBody},
 		{"socks rejected", Result{Error: `Get "http://probe.example/": SOCKS5 connect failed: code=0x05`}, CodeSOCKS},
 		{"too large", Result{StatusCode: 200, Error: "read probe response: 65536-byte response limit exceeded"}, CodeTooLarge},
 		{"malformed", Result{Error: `Get "http://probe.example/": net/http: HTTP/1.x transport connection broken: malformed HTTP response "SSH-2.0"`}, CodeBadResponse},

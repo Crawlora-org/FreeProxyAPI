@@ -190,7 +190,7 @@ func classifyMessage(raw string) string {
 		return CodeTLS
 	case has("response limit exceeded"):
 		return CodeTooLarge
-	case has("unexpected response body", "contained no caller ip"):
+	case has("unexpected response body", "contained no caller ip", "echo response failed nonce verification"):
 		return CodeUnexpectedBody
 	case has("unexpected http status", "unexpected status"):
 		return statusFromMessage(msg)

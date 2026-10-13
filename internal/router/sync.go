@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,7 +44,12 @@ type SyncOptions struct {
 	// ExcludeTampered sends exclude_tampered=true so proxies whose fresh echo
 	// tamper check failed are not routed.
 	ExcludeTampered bool
-	Limit           int
+	// RequireTamperChecked sends require_tamper_checked=true so only proxies
+	// with a fresh, explicitly clean tamper verdict are routed.
+	RequireTamperChecked bool
+	// HTTPS sends https=true so only proxies with a fresh HTTPS check pass are routed.
+	HTTPS bool
+	Limit int
 }
 
 // apiResponse is one page of the FreeProxyAPI response. HasMore is only sent by
@@ -168,17 +174,29 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	if !opts.PublicAPI {
 		token, err := os.ReadFile(opts.TokenFile)
 		if err != nil {
-			return fmt.Errorf("read API token: %w", err)
+			cause := fmt.Errorf("read API token: %w", err)
+			if opts.RequireTamperChecked {
+				return s.withdrawProxyPool(ctx, client, opts, cause)
+			}
+			return cause
 		}
 		tokenValue = strings.TrimSpace(string(token))
 		if len(tokenValue) < 16 {
-			return fmt.Errorf("API token is shorter than 16 characters")
+			cause := fmt.Errorf("API token is shorter than 16 characters")
+			if opts.RequireTamperChecked {
+				return s.withdrawProxyPool(ctx, client, opts, cause)
+			}
+			return cause
 		}
 	}
 
 	requestURL, err := url.Parse(opts.APIURL)
 	if err != nil {
-		return fmt.Errorf("parse API URL: %w", err)
+		cause := fmt.Errorf("parse API URL: %w", err)
+		if opts.RequireTamperChecked {
+			return s.withdrawProxyPool(ctx, client, opts, cause)
+		}
+		return cause
 	}
 	query := requestURL.Query()
 	setOptionalQuery(query, "country", opts.Country)
@@ -191,6 +209,12 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	if opts.ExcludeTampered {
 		query.Set("exclude_tampered", "true")
 	}
+	if opts.RequireTamperChecked {
+		query.Set("require_tamper_checked", "true")
+	}
+	if opts.HTTPS {
+		query.Set("https", "true")
+	}
 	if opts.MinimumRatioPct > 0 {
 		query.Set("min_ratio_pct", strconv.FormatInt(opts.MinimumRatioPct, 10))
 	}
@@ -199,7 +223,16 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	}
 	proxies, err := fetchProxies(ctx, client, opts, requestURL, query, tokenValue)
 	if err != nil {
+		if opts.RequireTamperChecked {
+			return s.withdrawProxyPool(ctx, client, opts, err)
+		}
 		return err
+	}
+	if opts.RequireTamperChecked {
+		proxies = filterStrictTamperResults(proxies, opts.HTTPS, time.Now().UnixMilli())
+	}
+	if opts.RequireTamperChecked && len(proxies) == 0 {
+		return s.withdrawProxyPool(ctx, client, opts, fmt.Errorf("strict tamper filter returned no proxies with a fresh clean verdict"))
 	}
 	config, err := BuildConfig(proxies, BuildOptions{
 		CountryField:  opts.CountryField,
@@ -211,6 +244,9 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 		APIAddress:    opts.GOSTAPIAddress,
 	})
 	if err != nil {
+		if opts.RequireTamperChecked {
+			return s.withdrawProxyPool(ctx, client, opts, err)
+		}
 		return err
 	}
 	changed, err := writeIfChanged(opts.OutputFile, config)
@@ -230,6 +266,52 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	return nil
 }
 
+// filterStrictTamperResults provides a client-side safety check when a
+// compatible API does not understand require_tamper_checked. The server still
+// enforces its configured maximum age; the router requires evidence to be
+// present and rejects future timestamps before it builds a GOST pool.
+func filterStrictTamperResults(proxies []store.QueryProxy, requireHTTPS bool, nowMs int64) []store.QueryProxy {
+	filtered := make([]store.QueryProxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if proxy.Tampered == nil || *proxy.Tampered || proxy.TamperCheckedAt <= 0 || proxy.TamperCheckedAt > nowMs {
+			continue
+		}
+		if requireHTTPS && (proxy.HTTPSOK == nil || !*proxy.HTTPSOK || proxy.HTTPSCheckedAt <= 0 || proxy.HTTPSCheckedAt > nowMs) {
+			continue
+		}
+		filtered = append(filtered, proxy)
+	}
+	return filtered
+}
+
+// withdrawProxyPool replaces a strict-clean proxy configuration with the
+// authenticated API-only bootstrap config after an empty result or query
+// failure. This makes the pool fail closed while preserving the router's
+// management API for subsequent syncs.
+func (s *syncer) withdrawProxyPool(ctx context.Context, client *http.Client, opts SyncOptions, cause error) error {
+	config, err := BuildBootstrapConfig(BuildOptions{
+		APIUsername: opts.GOSTAPIUsername,
+		APIPassword: opts.GOSTAPIPassword,
+		APIAddress:  opts.GOSTAPIAddress,
+	})
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("build GOST API-only config: %w", err))
+	}
+	changed, err := writeIfChanged(opts.OutputFile, config)
+	if err != nil {
+		return errors.Join(cause, fmt.Errorf("write GOST API-only config: %w", err))
+	}
+	if !changed && !s.reloadPending {
+		return cause
+	}
+	s.reloadPending = true
+	if err := reloadGOST(ctx, client, opts); err != nil {
+		return errors.Join(cause, fmt.Errorf("reload GOST API-only config: %w", err))
+	}
+	s.reloadPending = false
+	return cause
+}
+
 // fetchProxies reads up to opts.Limit proxies, following the server's paging.
 //
 // The first request asks for the whole limit with no offset, exactly as before,
@@ -240,10 +322,10 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 // server caps its page size below the limit, which would otherwise silently
 // shrink the pool to one page.
 //
-// Any failed page fails the whole refresh: the caller then keeps the last
-// generated GOST config instead of replacing it with a partial pool. Pages can
-// overlap when the validated pool changes between requests, so proxies are
-// deduplicated by URL.
+// Any failed page fails the whole refresh. Broad mode keeps the previous
+// generated config; strict tamper mode withdraws its proxy listeners because
+// the old clean verdicts cannot be refreshed. Pages can overlap when the
+// validated pool changes between requests, so proxies are deduplicated by URL.
 func fetchProxies(ctx context.Context, client *http.Client, opts SyncOptions, base *url.URL, query url.Values, token string) ([]store.QueryProxy, error) {
 	// The per-request timeout still applies to each page; this bounds the whole
 	// refresh so a long chain of slow pages cannot outlast the refresh interval.

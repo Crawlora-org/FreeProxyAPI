@@ -72,6 +72,10 @@ spec:
                   key: api-password
             - name: GOST_COUNTRIES
               value: "US"
+            - name: FREEPROXYAPI_REQUIRE_TAMPER_CHECKED
+              value: "false"
+            - name: FREEPROXYAPI_HTTPS
+              value: "false"
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

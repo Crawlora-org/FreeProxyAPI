@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/Crawlora-org/FreeProxyAPI/internal/store"
 	"github.com/alicebob/miniredis/v2"
@@ -62,6 +63,46 @@ func TestAggregateStableCountriesUsesObservedExitCountry(t *testing.T) {
 	}
 	if got := payload.StableByCountry["US"]; got != 1 {
 		t.Fatalf("stats stable US=%d, want 1", got)
+	}
+}
+
+func TestPublicProxiesRequireTamperCheckedReturnsOnlyFreshCleanHTTPS(t *testing.T) {
+	mini := miniredis.RunT(t)
+	redisStore, err := store.NewRedis("redis://"+mini.Addr()+"/0", "strict-clean-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer redisStore.Close()
+	nowMs := time.Now().UnixMilli()
+	seed := func(id string, fields ...string) {
+		mini.SAdd("strict-clean-test:validated", id)
+		base := []string{"url", "http://" + id + ".example:8080", "country", "US", "ok_ratio_pct", "100"}
+		mini.HSet("strict-clean-test:proxy:"+id, append(base, fields...)...)
+	}
+	checkedAt := strconv.FormatInt(nowMs-1_000, 10)
+	seed("clean", "tampered", "0", "tamper_checked_at_ms", checkedAt, "https_ok", "1", "https_checked_at_ms", checkedAt)
+	seed("tampered", "tampered", "1", "tamper_checked_at_ms", checkedAt, "https_ok", "1", "https_checked_at_ms", checkedAt)
+	seed("stale", "tampered", "0", "tamper_checked_at_ms", strconv.FormatInt(nowMs-int64(2*24*time.Hour/time.Millisecond), 10), "https_ok", "1", "https_checked_at_ms", checkedAt)
+	seed("unchecked", "https_ok", "1", "https_checked_at_ms", checkedAt)
+	runner := &Runner{
+		store: redisStore, metrics: newMetrics(),
+		config: Config{ClassificationMaxAge: 24 * time.Hour},
+	}
+	health, err := startHealthServer("127.0.0.1:0", runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer health.Shutdown()
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/proxies?require_tamper_checked=true&https=true", nil)
+	health.server.Handler.ServeHTTP(response, request)
+	var payload publicProxiesPayload
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &payload) != nil {
+		t.Fatalf("strict response: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if payload.Count != 1 || len(payload.Proxies) != 1 || payload.Proxies[0].URL != "http://clean.example:8080" {
+		t.Fatalf("strict clean HTTPS response = %+v", payload)
 	}
 }
 

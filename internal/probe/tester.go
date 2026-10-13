@@ -55,7 +55,7 @@ func Test(parent context.Context, proxyURL, targetURL string, timeout time.Durat
 // whitespace removed, equals expectedBody. This rejects captive portals, ad
 // injectors, and caches that answer 2xx with unrelated content.
 func TestExpectBody(parent context.Context, proxyURL, targetURL string, timeout time.Duration, expectedBody string) Result {
-	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, expectedBody, endpoint.DialPublicContext)
+	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, expectedBody, endpoint.DialPublicContext, nil)
 }
 
 // TestEcho sends one GET through a proxy to an echo endpoint and uses that
@@ -86,19 +86,26 @@ func TestEchoWithConnectTimeout(parent context.Context, proxyURL, targetURL stri
 	return runProbeEcho(parent, proxyURL, targetURL, timeout, originIP, publicHopDialer(connectTimeout))
 }
 
+// TestEchoWithConnectTimeoutAndClient also uses the monitor's direct echo
+// baseline to determine whether this configured endpoint supports httpbin
+// echo semantics. It still performs exactly one request through the proxy.
+func TestEchoWithConnectTimeoutAndClient(parent context.Context, proxyURL, targetURL string, timeout, connectTimeout time.Duration, originIP string, echoClient *EchoClient) Result {
+	return runProbeMode(parent, proxyURL, targetURL, timeout, originIP, true, "", publicHopDialer(connectTimeout), echoClient)
+}
+
 // TestExpectBodyWithConnectTimeout is the production standard-mode probe: the
 // proxy-hop TCP connect is bounded by connectTimeout and, when expectedBody is
 // non-empty, the trimmed response body must equal it (see TestExpectBody).
 func TestExpectBodyWithConnectTimeout(parent context.Context, proxyURL, targetURL string, timeout, connectTimeout time.Duration, expectedBody string) Result {
-	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, expectedBody, publicHopDialer(connectTimeout))
+	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, expectedBody, publicHopDialer(connectTimeout), nil)
 }
 
 func runProbe(parent context.Context, proxyURL, targetURL string, timeout time.Duration, dialPublic dialFunc) (result Result) {
-	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, "", dialPublic)
+	return runProbeMode(parent, proxyURL, targetURL, timeout, "", false, "", dialPublic, nil)
 }
 
 func runProbeEcho(parent context.Context, proxyURL, targetURL string, timeout time.Duration, originIP string, dialPublic dialFunc) (result Result) {
-	return runProbeMode(parent, proxyURL, targetURL, timeout, originIP, true, "", dialPublic)
+	return runProbeMode(parent, proxyURL, targetURL, timeout, originIP, true, "", dialPublic, nil)
 }
 
 // cacheBusterParam is the query parameter appended to standard-mode probe
@@ -125,7 +132,7 @@ func withCacheBuster(rawURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func runProbeMode(parent context.Context, proxyURL, targetURL string, timeout time.Duration, originIP string, echo bool, expectedBody string, dialPublic dialFunc) (result Result) {
+func runProbeMode(parent context.Context, proxyURL, targetURL string, timeout time.Duration, originIP string, echo bool, expectedBody string, dialPublic dialFunc, echoClient *EchoClient) (result Result) {
 	started := time.Now()
 	traffic := &probeTraffic{}
 	defer func() {
@@ -176,7 +183,17 @@ func runProbeMode(parent context.Context, proxyURL, targetURL string, timeout ti
 		},
 	}
 	requestURL := targetURL
-	if !echo {
+	var echoNonce string
+	var requestedEchoURL *url.URL
+	if echo {
+		echoNonce = newEchoNonce()
+		requestedEchoURL, err = withEchoNonce(targetURL, echoNonce)
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		requestURL = requestedEchoURL.String()
+	} else {
 		busted, err := withCacheBuster(targetURL)
 		if err != nil {
 			result.Error = err.Error()
@@ -190,10 +207,8 @@ func runProbeMode(parent context.Context, proxyURL, targetURL string, timeout ti
 		return result
 	}
 	request.Header.Set("User-Agent", "FreeProxyAPI/0.1 (proxy-probe)")
-	if !echo {
-		request.Header.Set("Cache-Control", "no-cache")
-		request.Header.Set("Pragma", "no-cache")
-	}
+	request.Header.Set("Cache-Control", "no-cache")
+	request.Header.Set("Pragma", "no-cache")
 	response, err := client.Do(request)
 	if err != nil {
 		result.Error = err.Error()
@@ -216,6 +231,17 @@ func runProbeMode(parent context.Context, proxyURL, targetURL string, timeout ti
 	}
 	if echo {
 		result.Anonymity = classifyEchoResponse(response.StatusCode, response.Header, string(drained), originIP)
+		if echoClient == nil {
+			echoClient = &EchoClient{}
+		}
+		eligible, classified := echoClient.annotateCombinedEcho(targetURL, requestedEchoURL, echoNonce, response.Header, string(drained), result.Anonymity)
+		result.Anonymity = classified
+		if eligible && result.Anonymity.Tampered && (result.Anonymity.TamperReason == "body" || result.Anonymity.TamperReason == "nonce" || result.Anonymity.TamperReason == "url") {
+			result.Anonymity.Class = ""
+			result.Anonymity.ExitIP = ""
+			result.Error = "echo response failed nonce verification"
+			return result
+		}
 		if result.Anonymity.Class == "" {
 			result.Error = "echo response contained no caller IP"
 			return result

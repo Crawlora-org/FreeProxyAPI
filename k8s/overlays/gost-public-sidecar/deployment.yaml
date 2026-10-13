@@ -47,6 +47,10 @@ spec:
               value: ""
             - name: FREEPROXYAPI_GEO_MISMATCH
               value: "false"
+            - name: FREEPROXYAPI_REQUIRE_TAMPER_CHECKED
+              value: "false"
+            - name: FREEPROXYAPI_HTTPS
+              value: "false"
             - name: GOST_MAX_LATENCY_MS
               value: "0"
             - name: GOST_API_URL

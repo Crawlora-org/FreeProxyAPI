@@ -61,6 +61,8 @@ services:
     environment:
       FREEPROXYAPI_URL: http://freeproxyapi:8080/internal/api/v1/proxies
       FREEPROXYAPI_TOKEN_FILE: /run/secrets/freeproxyapi-internal-api-token
+      FREEPROXYAPI_REQUIRE_TAMPER_CHECKED: "${FREEPROXYAPI_REQUIRE_TAMPER_CHECKED:-false}"
+      FREEPROXYAPI_HTTPS: "${FREEPROXYAPI_HTTPS:-false}"
       GOST_CONFIG_FILE: /runtime/gost.json
       GOST_API_URL: http://gost:18080
       GOST_API_ADDRESS: :18080

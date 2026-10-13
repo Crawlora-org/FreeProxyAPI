@@ -62,6 +62,8 @@ func parseOptions(args []string, getenv func(string) string) (router.SyncOptions
 	anonymity := flags.String("anonymity", getenv("FREEPROXYAPI_ANONYMITY"), "validated proxy anonymity filter")
 	geoMismatch := flags.Bool("geo-mismatch", env.boolean("FREEPROXYAPI_GEO_MISMATCH", false), "only use proxies whose endpoint and exit countries differ")
 	excludeTampered := flags.Bool("exclude-tampered", env.boolean("FREEPROXYAPI_EXCLUDE_TAMPERED", true), "skip proxies whose latest echo tamper check found modified traffic")
+	requireTamperChecked := flags.Bool("require-tamper-checked", env.boolean("FREEPROXYAPI_REQUIRE_TAMPER_CHECKED", false), "only use proxies with a fresh, explicitly clean echo tamper check")
+	https := flags.Bool("https", env.boolean("FREEPROXYAPI_HTTPS", false), "only use proxies with a fresh HTTPS check pass")
 	limit := flags.Int("limit", env.integer("FREEPROXYAPI_LIMIT", 1000), "maximum validated proxies fetched per refresh")
 	if err := flags.Parse(args); err != nil {
 		return router.SyncOptions{}, err
@@ -72,29 +74,31 @@ func parseOptions(args []string, getenv func(string) string) (router.SyncOptions
 		return router.SyncOptions{}, errors.Join(env.errs...)
 	}
 	opts := router.SyncOptions{
-		APIURL:           *apiURL,
-		PublicAPI:        *publicAPI,
-		TokenFile:        *tokenFile,
-		OutputFile:       *outputFile,
-		GOSTAPIURL:       *gostAPIURL,
-		GOSTAPIAddress:   *gostAPIAddress,
-		GOSTAPIUsername:  *gostAPIUser,
-		GOSTAPIPassword:  gostAPIPassword,
-		ProxyUsername:    *proxyUser,
-		ProxyPassword:    proxyPassword,
-		CountryField:     *countryField,
-		Countries:        splitCSV(*countries),
-		RefreshInterval:  *refresh,
-		RequestTimeout:   *timeout,
-		MinimumRatioPct:  *minRatio,
-		MaximumLatencyMs: *maxLatency,
-		Country:          strings.TrimSpace(*country),
-		ExitCountry:      strings.TrimSpace(*exitCountry),
-		ASN:              strings.TrimSpace(*asn),
-		Anonymity:        strings.TrimSpace(*anonymity),
-		GeoMismatch:      *geoMismatch,
-		ExcludeTampered:  *excludeTampered,
-		Limit:            *limit,
+		APIURL:               *apiURL,
+		PublicAPI:            *publicAPI,
+		TokenFile:            *tokenFile,
+		OutputFile:           *outputFile,
+		GOSTAPIURL:           *gostAPIURL,
+		GOSTAPIAddress:       *gostAPIAddress,
+		GOSTAPIUsername:      *gostAPIUser,
+		GOSTAPIPassword:      gostAPIPassword,
+		ProxyUsername:        *proxyUser,
+		ProxyPassword:        proxyPassword,
+		CountryField:         *countryField,
+		Countries:            splitCSV(*countries),
+		RefreshInterval:      *refresh,
+		RequestTimeout:       *timeout,
+		MinimumRatioPct:      *minRatio,
+		MaximumLatencyMs:     *maxLatency,
+		Country:              strings.TrimSpace(*country),
+		ExitCountry:          strings.TrimSpace(*exitCountry),
+		ASN:                  strings.TrimSpace(*asn),
+		Anonymity:            strings.TrimSpace(*anonymity),
+		GeoMismatch:          *geoMismatch,
+		ExcludeTampered:      *excludeTampered,
+		RequireTamperChecked: *requireTamperChecked,
+		HTTPS:                *https,
+		Limit:                *limit,
 	}
 	return opts, validateOptions(opts)
 }

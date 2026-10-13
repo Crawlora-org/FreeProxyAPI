@@ -705,7 +705,7 @@ func (h *healthHandlers) proxies(w http.ResponseWriter, r *http.Request) {
 	cacheKey := publicProxyCacheKey(filter, offset)
 	ctx, cancel := context.WithTimeout(r.Context(), publicProxyRequestTimeout)
 	defer cancel()
-	body, remaining, cached, err := h.publicCache.getOrLoad(ctx, cacheKey, func(loadCtx context.Context) ([]byte, error) {
+	body, remaining, cached, err := h.publicCache.getOrLoadWithStale(ctx, cacheKey, !filter.RequireTamperChecked, func(loadCtx context.Context) ([]byte, error) {
 		return h.loadProxiesBody(loadCtx, filter, offset)
 	})
 	if err != nil {
@@ -875,8 +875,9 @@ func proxyFilter(r *http.Request) (store.ProxyFilter, error) {
 		MaxAgeMs:     maxAgeMs,
 		HTTPS:        parseBool(q.Get("https")),
 		// exclude_tampered drops proxies whose fresh echo tamper check failed.
-		ExcludeTampered: parseBool(q.Get("exclude_tampered")),
-		Limit:           limit,
+		ExcludeTampered:      parseBool(q.Get("exclude_tampered")),
+		RequireTamperChecked: parseBool(q.Get("require_tamper_checked")),
+		Limit:                limit,
 	}, nil
 }
 

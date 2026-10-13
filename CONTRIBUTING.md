@@ -13,7 +13,7 @@ Thanks for helping. Bug reports, fixes, docs, and new tests are all welcome.
 
 ## Development setup
 
-You need Go 1.27.1 or newer (`go.mod` sets the toolchain; older Go versions
+You need Go 1.27.2 or newer (`go.mod` sets the toolchain; older Go versions
 download it automatically). Redis is not required to run the tests.
 
 ```sh

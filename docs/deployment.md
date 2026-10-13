@@ -373,6 +373,15 @@ and anonymity classification:
 }
 ```
 
+Combined echo probes carry a fresh `fpa_nonce`, as separate anonymity checks
+do, and reuse the direct echo profile for body and header comparisons. A response
+that violates a supported echo contract (body, nonce, or URL) is a failed
+reachability sample and does not refresh anonymity or exit fields. Its tamper
+verdict is still recorded. Header-only differences remain annotations.
+Endpoints whose direct response does not support the echo contract remain
+usable for IP classification, with tamper status unknown. No additional proxy
+request or budget permit is needed for the combined check.
+
 The default `probe_target_mode` is `standard`; it validates reachability from
 the proxy by accepting a successful HTTP response. Standard-mode probes append
 a random `_fpa` query parameter and send `Cache-Control: no-cache` and
@@ -475,13 +484,19 @@ listed HTTP proxies, `X-PANW-*` (a Palo Alto inspection firewall) and
 `Fly-Request-Id` (a proxy fronted by another edge) were flagged, while the
 remaining clean proxies added nothing beyond this list.
 
-A tampered response is still classified for anonymity when its JSON is
-parseable. Results are stored as `tampered` and `tamper_checked_at_ms`, and
-tampered proxies **stay listed**. `/proxies` and the internal API expose
+A separate anonymity check can still classify a tampered response when its
+JSON is parseable; that annotation alone does not affect listing. In combined
+echo mode, body-contract failures contribute a failed sample to the usual
+listing policy. Results are stored as `tampered` and `tamper_checked_at_ms`.
+`/proxies` and the internal API expose
 `tampered` while fresh (within `classification_max_age`), and
 `exclude_tampered=true` drops proxies whose fresh flag is true. Unchecked or
 stale proxies stay included. `proxy-router` sends it by default
-(`FREEPROXYAPI_EXCLUDE_TAMPERED`). Outcomes are counted in
+(`FREEPROXYAPI_EXCLUDE_TAMPERED`). The opt-in `require_tamper_checked=true`
+filter instead requires a timestamped, fresh, explicitly clean observation;
+combine it with `https=true` for verified HTTPS support. Router equivalents
+are `FREEPROXYAPI_REQUIRE_TAMPER_CHECKED` and `FREEPROXYAPI_HTTPS`.
+Outcomes are counted in
 `freeproxyapi_echo_tamper_results_total{outcome="clean"|"tampered"}`, with the
 first detected reason in
 `freeproxyapi_echo_tamper_reasons_total{reason="body"|"nonce"|"url"|"header"}`.
