@@ -75,6 +75,7 @@ func parseOptions(args []string, getenv func(string) string) (router.SyncOptions
 	sessionTTL := flags.Duration("session-ttl", env.duration("GOST_SESSION_TTL", 10*time.Minute), "how long named sessions keep their pinned upstream")
 	sessionBasePort := flags.Int("session-base-port", env.integer("GOST_SESSION_BASE_PORT", 10000), "first port used by named session listeners")
 	sessionFailover := flags.Bool("session-failover", env.boolean("GOST_SESSION_FAILOVER", false), "allow named sessions to move to another upstream before their pin expires")
+	sessionStableExit := flags.Bool("session-stable-exit", env.boolean("GOST_SESSION_STABLE_EXIT", false), "assign named sessions only to proxies with fresh repeated exit-IP observations")
 	limit := flags.Int("limit", env.integer("FREEPROXYAPI_LIMIT", 1000), "maximum validated proxies fetched per refresh")
 	if err := flags.Parse(args); err != nil {
 		return router.SyncOptions{}, err
@@ -124,6 +125,7 @@ func parseOptions(args []string, getenv func(string) string) (router.SyncOptions
 		SessionTTL:              *sessionTTL,
 		SessionBasePort:         *sessionBasePort,
 		SessionFailover:         *sessionFailover,
+		SessionStableExit:       *sessionStableExit,
 		Limit:                   *limit,
 	}
 	return opts, validateOptions(opts)

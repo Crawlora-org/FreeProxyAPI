@@ -421,6 +421,14 @@ minutes and `GOST_SESSION_FAILOVER` defaults to false. The Compose and base
 Kubernetes templates leave `GOST_SESSIONS` empty. The live overlay separately
 enables two named listeners.
 
+Set `GOST_SESSION_STABLE_EXIT=true` (flag `-session-stable-exit`) to select
+named-session upstreams only from proxies with a recent stable-exit result,
+at least two observed exits, and a known exit IP. It defaults to false. The
+live overlay enables it for named sessions; the normal rotating pool keeps
+its broader eligible set. Missing or expired evidence pauses a pinned
+session under the existing failover policy. These are past observations,
+so the filter does not guarantee that an upstream will never rotate its exit.
+
 The base port must be at least 1024, and the assigned range must fit below
 65536 and avoid the unified/country listeners and GOST Web API port. For
 several sessions, leave enough free consecutive ports.

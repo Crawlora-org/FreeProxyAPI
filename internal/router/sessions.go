@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"sort"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 )
 
 const maxNamedSessions = 128
+
+const sessionStableExitMaxAge = 24 * time.Hour
 
 // SessionListener describes one authenticated GOST listener pinned to one
 // validated upstream. Its ID and port are operator controlled and validated
@@ -161,6 +164,9 @@ func reconcileSessionListeners(state *syncer, opts SyncOptions, proxies []store.
 		if strings.EqualFold(strings.TrimSpace(proxy.LastStatus), "failed") || proxy.URL == "" {
 			continue
 		}
+		if opts.SessionStableExit && !sessionHasStableExit(proxy, now) {
+			continue
+		}
 		country := proxy.Country
 		if strings.EqualFold(opts.CountryField, "exit") {
 			country = proxy.ExitCountry
@@ -213,6 +219,24 @@ func reconcileSessionListeners(state *syncer, opts SyncOptions, proxies []store.
 		listeners = append(listeners, SessionListener{ID: id, Port: ports[id], Proxy: proxy})
 	}
 	return listeners
+}
+
+// sessionHasStableExit keeps the evidence gate local to named-session
+// selection. It does not narrow the ordinary unified or country pool.
+func sessionHasStableExit(proxy store.QueryProxy, now time.Time) bool {
+	if proxy.StableExit == nil || !*proxy.StableExit || proxy.ExitIPSamples == nil || *proxy.ExitIPSamples < 2 || proxy.ExitCheckedAt <= 0 {
+		return false
+	}
+	nowMs := now.UnixMilli()
+	if proxy.ExitCheckedAt > nowMs || nowMs-proxy.ExitCheckedAt > sessionStableExitMaxAge.Milliseconds() {
+		return false
+	}
+	ip, err := netip.ParseAddr(strings.TrimSpace(proxy.ExitIP))
+	if err != nil {
+		return false
+	}
+	ip = ip.Unmap()
+	return ip.IsGlobalUnicast() && !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() && !ip.IsUnspecified() && !ip.IsMulticast()
 }
 
 func sessionCandidateIndex(id string, candidateCount int) int {
