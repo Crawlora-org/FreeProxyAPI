@@ -23,6 +23,8 @@ spec:
               value: "10000"
             - name: GOST_SESSION_FAILOVER
               value: "false"
+            - name: GOST_SESSION_STABLE_EXIT
+              value: "true"
         - name: gost
           ports:
             - name: session-alpha

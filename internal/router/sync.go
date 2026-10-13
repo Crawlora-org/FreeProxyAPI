@@ -55,12 +55,13 @@ type SyncOptions struct {
 	// with a fresh, explicitly clean tamper verdict are routed.
 	RequireTamperChecked bool
 	// HTTPS sends https=true so only proxies with a fresh HTTPS check pass are routed.
-	HTTPS           bool
-	Sessions        []string
-	SessionTTL      time.Duration
-	SessionBasePort int
-	SessionFailover bool
-	Limit           int
+	HTTPS             bool
+	Sessions          []string
+	SessionTTL        time.Duration
+	SessionBasePort   int
+	SessionFailover   bool
+	SessionStableExit bool
+	Limit             int
 }
 
 // apiResponse is one page of the FreeProxyAPI response. HasMore is only sent by
