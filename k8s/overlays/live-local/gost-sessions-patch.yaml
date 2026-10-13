@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gost-router
+  namespace: freeproxyapi
+spec:
+  template:
+    spec:
+      containers:
+        - name: proxy-router
+          env:
+            - name: GOST_SESSIONS
+              value: "alpha,beta"
+            - name: GOST_SESSION_TTL
+              value: "10m"
+            - name: GOST_SESSION_BASE_PORT
+              value: "10000"
+            - name: GOST_SESSION_FAILOVER
+              value: "false"
+        - name: gost
+          ports:
+            - name: session-alpha
+              containerPort: 10000
+              protocol: TCP
+            - name: session-beta
+              containerPort: 10001
+              protocol: TCP

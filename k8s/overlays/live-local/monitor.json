@@ -753,23 +753,32 @@
   "retest_jitter_pct": 50,
   "evicted_backoff_base": "2h",
   "evicted_backoff_max": "168h",
-  "probe_target": "http://detectportal.firefox.com/success.txt",
-  "probe_target_mode": "standard",
-  "probe_expected_body": "success",
+  "probe_target": "http://freeproxyapi.crawlora.net/get",
+  "probe_target_mode": "echo",
+  "probe_expected_body": "",
   "validated_retest_interval": "15m",
   "failed_retest_interval": "1h",
   "listed_failure_retest_interval": "5m",
   "sample_retest_interval": "60s",
   "min_samples_for_listing": 3,
   "geoip_db_path": "/geoip/GeoLite2-Country.mmdb",
-  "anonymity_check_url": "http://freeproxyapi.crawlora.net/get",
+  "anonymity_check_url": "",
   "internal_api_token_file": "/internal-api/token",
   "geoip_asn_db_path": "/geoip/GeoLite2-ASN.mmdb",
-  "https_probe_target": "https://detectportal.firefox.com/success.txt",
-  "https_probe_expected_body": "success",
+  "https_probe_target": "https://freeproxyapi.crawlora.net/get",
+  "https_probe_expected_body": "",
   "https_probe_every": 4,
   "control_probe_enabled": true,
   "control_probe_interval": "60s",
   "control_probe_failure_threshold": 3,
-  "classification_max_age": "24h"
+  "classification_max_age": "24h",
+  "source_learning_enabled": true,
+  "target_profiles": [
+    {
+      "name": "crawlora-content",
+      "url": "https://freeproxyapi.crawlora.net/get?probe_content=1",
+      "expected_body": "FreeProxyAPI probe OK"
+    }
+  ],
+  "target_probe_every": 64
 }
