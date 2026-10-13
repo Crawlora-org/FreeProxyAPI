@@ -94,6 +94,18 @@ API-only GOST configuration, withdrawing proxy listeners until a matching
 pool returns. Write or reload failures are reported and retried; withdrawal
 takes effect only after GOST accepts the reload.
 
+For HTTP(S) upstreams, a successful HTTPS observation from the past 24 hours
+can supply the effective hop transport through `https_tunnel_scheme`. This
+lets a mislabeled HTTPS feed entry use plain HTTP CONNECT when that is the
+transport the monitor verified. Missing, failed, stale, future-dated, or
+unsupported evidence leaves the original scheme unchanged; the destination
+TLS connection still uses its normal certificate verification.
+
+Plain `socks4` nodes disable SOCKS4a in GOST so destination names are resolved
+locally and sent as IPv4 addresses, matching the monitor's SOCKS4 probe.
+`socks4a` nodes retain remote DNS. The two forms are distinct capabilities;
+a successful plain SOCKS4 check does not establish SOCKS4a support.
+
 Additional quality filters include `FREEPROXYAPI_EXIT_ASN`,
 `FREEPROXYAPI_EXCLUDE_HOSTING`, `FREEPROXYAPI_STABLE_EXIT`,
 `FREEPROXYAPI_MIN_SUCCESS_STREAK`, `FREEPROXYAPI_MIN_RELIABILITY_7D_PCT`, and
