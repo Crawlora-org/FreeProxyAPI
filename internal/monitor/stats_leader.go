@@ -34,28 +34,38 @@ type statsLeaderState struct {
 // sharedValidatedAggregate is the JSON document the stats leader stores in
 // Redis. It carries only counts, never endpoint identities.
 type sharedValidatedAggregate struct {
-	ComputedAtMs    int64            `json:"computed_at_ms"`
-	ByCountry       map[string]int64 `json:"by_country"`
-	StableByCountry map[string]int64 `json:"stable_by_country"`
-	ByASN           map[string]int64 `json:"by_asn"`
-	ByAnonymity     map[string]int64 `json:"by_anonymity"`
-	ByLatencyBand   map[string]int64 `json:"by_latency_band"`
-	Stable          int64            `json:"stable"`
-	BandKnown       int64            `json:"band_known"`
-	GeoMismatch     int64            `json:"geo_mismatch"`
+	UnattributedValidated int64            `json:"unattributed_validated,omitempty"`
+	UnattributedRouting   int64            `json:"unattributed_routing,omitempty"`
+	BySource              map[string]int64 `json:"by_source,omitempty"`
+	RoutingBySource       map[string]int64 `json:"routing_by_source,omitempty"`
+	SourceCountsObserved  bool             `json:"source_counts_observed,omitempty"`
+	ComputedAtMs          int64            `json:"computed_at_ms"`
+	ByCountry             map[string]int64 `json:"by_country"`
+	StableByCountry       map[string]int64 `json:"stable_by_country"`
+	ByASN                 map[string]int64 `json:"by_asn"`
+	ByAnonymity           map[string]int64 `json:"by_anonymity"`
+	ByLatencyBand         map[string]int64 `json:"by_latency_band"`
+	Stable                int64            `json:"stable"`
+	BandKnown             int64            `json:"band_known"`
+	GeoMismatch           int64            `json:"geo_mismatch"`
 }
 
 func newSharedValidatedAggregate(v validatedSlices, computedAt time.Time) sharedValidatedAggregate {
 	return sharedValidatedAggregate{
-		ComputedAtMs:    computedAt.UnixMilli(),
-		ByCountry:       v.ByCountry,
-		StableByCountry: v.StableByCountry,
-		ByASN:           v.ByASN,
-		ByAnonymity:     v.ByAnonymity,
-		ByLatencyBand:   v.ByLatencyBand,
-		Stable:          v.Stable,
-		BandKnown:       v.BandKnown,
-		GeoMismatch:     v.GeoMismatch,
+		ComputedAtMs:          computedAt.UnixMilli(),
+		UnattributedValidated: v.UnattributedValidated,
+		UnattributedRouting:   v.UnattributedRouting,
+		BySource:              v.BySource,
+		RoutingBySource:       v.RoutingBySource,
+		SourceCountsObserved:  v.SourceCountsObserved,
+		ByCountry:             v.ByCountry,
+		StableByCountry:       v.StableByCountry,
+		ByASN:                 v.ByASN,
+		ByAnonymity:           v.ByAnonymity,
+		ByLatencyBand:         v.ByLatencyBand,
+		Stable:                v.Stable,
+		BandKnown:             v.BandKnown,
+		GeoMismatch:           v.GeoMismatch,
 	}
 }
 
@@ -67,6 +77,17 @@ func (a sharedValidatedAggregate) slices() validatedSlices {
 		return m
 	}
 	return validatedSlices{
+		UnattributedValidated: a.UnattributedValidated,
+		UnattributedRouting:   a.UnattributedRouting,
+		BySource:              orEmpty(a.BySource),
+		RoutingBySource:       orEmpty(a.RoutingBySource),
+		SourceCountsObserved:  a.SourceCountsObserved,
+		SourceCountsAtMS: func() int64 {
+			if a.SourceCountsObserved {
+				return a.ComputedAtMs
+			}
+			return 0
+		}(),
 		ByCountry:       orEmpty(a.ByCountry),
 		StableByCountry: orEmpty(a.StableByCountry),
 		ByASN:           orEmpty(a.ByASN),

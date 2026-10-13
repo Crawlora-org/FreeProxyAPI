@@ -92,8 +92,9 @@ type Runner struct {
 
 	// statsLeader is the shared-aggregate lease (stats_leader.go); permits is
 	// the local global-budget bucket (budget.go). Both are zero-value ready.
-	statsLeader statsLeaderState
-	permits     permitBucket
+	statsLeader      statsLeaderState
+	sourceEfficiency sourceEfficiencyState
+	permits          permitBucket
 }
 
 // wakeNotifier is a broadcast edge-triggered notification. Replacing the
@@ -397,6 +398,7 @@ func (r *Runner) publishStats(ctx context.Context) {
 	r.metrics.SetPendingSchedule(stats.PendingDue, stats.NextDueAt, stats.HasNextDue, now)
 
 	slices := r.resolveValidatedSlices(publishCtx, now)
+	r.publishSourceEfficiency(publishCtx, slices, r.nowFunc())
 	// Build the complete labeled set first and swap it in atomically so a
 	// concurrent scrape never observes a partially refilled exposition.
 	labeled := make(map[string]int64, len(slices.ByCountry)+len(slices.ByLatencyBand)+len(slices.ByASN)+len(slices.ByAnonymity))
@@ -490,6 +492,8 @@ func (r *Runner) aggregateValidatedSlicesFrom(ctx context.Context, redisStore *s
 		ByASN:           map[string]int64{},
 		ByAnonymity:     map[string]int64{},
 		ByLatencyBand:   map[string]int64{},
+		BySource:        map[string]int64{},
+		RoutingBySource: map[string]int64{},
 	}
 	details, err := redisStore.ValidatedDetails(ctx)
 	if err != nil {
@@ -502,7 +506,28 @@ func (r *Runner) aggregateValidatedSlicesFrom(ctx context.Context, redisStore *s
 		// consumers.
 		return r.validatedSlicesSnapshot()
 	}
+	now := time.Now()
+	if r.nowFunc != nil {
+		now = r.nowFunc()
+	}
+	out.SourceCountsObserved = true
+	out.SourceCountsAtMS = now.UnixMilli()
+	known := make(map[string]bool)
+	for _, spec := range r.config.SourceSpecs {
+		known[r.sourceID(spec)] = true
+	}
 	for _, d := range details {
+		if known[d.SourceID] {
+			out.BySource[d.SourceID]++
+			if d.RoutingEligible(now, r.config.ClassificationMaxAge) {
+				out.RoutingBySource[d.SourceID]++
+			}
+		} else {
+			out.UnattributedValidated++
+			if d.RoutingEligible(now, r.config.ClassificationMaxAge) {
+				out.UnattributedRouting++
+			}
+		}
 		if d.Country != "" && d.ExitCountry != "" && d.Country != d.ExitCountry {
 			out.GeoMismatch++
 		}
@@ -686,6 +711,8 @@ func (r *Runner) startSourceRefreshWorkers(ctx context.Context, stageKey string)
 // drainSourceRefresh collects per-source results, drains the shared stage
 // into the validation queue, and records the refresh stats.
 func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, results <-chan sourceRefreshResult) error {
+	admissions := make(map[string]int64)
+	admissionExcluded := make(map[string]bool)
 	var (
 		totalRejected int64
 		totalParsed   int64
@@ -711,6 +738,14 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 			continue
 		}
 		okSources++
+		if r.config.SourceLearningEnabled {
+			id := r.sourceID(result.spec)
+			if result.truncated {
+				admissionExcluded[id] = true
+			} else {
+				admissions[id] = 0
+			}
+		}
 		totalParsed += int64(result.parsed)
 		totalRejected += int64(result.rejected)
 	}
@@ -748,6 +783,12 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 	queueBase := r.nowFunc()
 	err = r.store.DrainSourceStagePrioritized(ctx, stageKey, func(priority int64, batch []string) error {
 		if room == 0 {
+			if r.config.SourceLearningEnabled {
+				_, index, decodeErr := store.DecodeSourceStageScore(priority)
+				if decodeErr == nil && index >= 0 && index < len(r.config.SourceSpecs) {
+					admissionExcluded[r.sourceID(r.config.SourceSpecs[index])] = true
+				}
+			}
 			totalCapped += len(batch)
 			return nil
 		}
@@ -756,6 +797,13 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 			return err
 		}
 		totalAdded += counts.Added
+		if r.config.SourceLearningEnabled {
+			_, index, err := store.DecodeSourceStageScore(priority)
+			if err != nil || index < 0 || index >= len(r.config.SourceSpecs) {
+				return fmt.Errorf("invalid source admission score")
+			}
+			admissions[r.sourceID(r.config.SourceSpecs[index])] += int64(counts.Added)
+		}
 		if room > 0 {
 			if room -= int64(counts.Added); room < 0 {
 				room = 0
@@ -772,6 +820,25 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 	if err := r.store.SetSourceRefreshStats(ctx, uniqueCount, totalParsed, int64(okSources)); err != nil {
 		r.recordRefreshError()
 		return err
+	}
+	if r.config.SourceLearningEnabled {
+		for id := range admissionExcluded {
+			delete(admissions, id)
+		}
+		ids := make([]string, 0, len(admissions))
+		for id := range admissions {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for start := 0; start < len(ids); start += store.MaxSourceQualityReadBatch {
+			batch := make(map[string]int64)
+			for _, id := range ids[start:min(start+store.MaxSourceQualityReadBatch, len(ids))] {
+				batch[id] = admissions[id]
+			}
+			if err := r.store.RecordSourceAdmissionRefresh(ctx, batch, r.nowFunc()); err != nil {
+				log.Printf("source admission observation failed count=%d", len(batch))
+			}
+		}
 	}
 	if totalCapped > 0 {
 		r.metrics.AddCandidatesCapped(int64(totalCapped))
@@ -874,11 +941,12 @@ func sourceQueueTime(now time.Time, priority int64) time.Time {
 }
 
 type sourceRefreshResult struct {
-	spec     SourceSpec
-	stage    string
-	parsed   int
-	rejected int
-	err      error
+	spec      SourceSpec
+	stage     string
+	parsed    int
+	rejected  int
+	err       error
+	truncated bool
 }
 
 const (
@@ -946,7 +1014,7 @@ func (r *Runner) refreshSourceAttempt(ctx context.Context, spec SourceSpec, stag
 		_ = r.store.DeleteSourceStage(cleanupCtx, sourceKey)
 	}()
 	truncated := false
-	err = r.fetch.Stream(ctx, spec.URL, func(reader io.Reader) error {
+	fetchStats, fetchErr := r.fetch.StreamMeasured(ctx, spec.URL, func(reader io.Reader) error {
 		batch := make([]string, 0, sourceStageBatch)
 		flush := func() error {
 			if len(batch) == 0 {
@@ -980,6 +1048,16 @@ func (r *Runner) refreshSourceAttempt(ctx context.Context, spec SourceSpec, stag
 		}
 		return flush()
 	})
+	err = fetchErr
+	result.truncated = truncated
+	if r.config.SourceLearningEnabled {
+		costCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
+		costErr := r.store.RecordSourceFetchCost(costCtx, r.sourceID(spec), fetchStats.HTTPAttempts, fetchStats.NetworkBytes, fetchStats.Duration.Milliseconds(), r.nowFunc())
+		cancel()
+		if costErr != nil && ctx.Err() == nil {
+			log.Printf("source cost observation failed source_id=%s", r.sourceID(spec))
+		}
+	}
 	if truncated && err == nil {
 		r.metrics.AddSourcesTruncated(1)
 		log.Printf("source truncated source=%q limit=%d: ignoring the rest of the feed", sourceLogLabel(spec.URL), r.config.MaxRecordsPerSource)
@@ -1086,6 +1164,7 @@ func (r *Runner) workerLoop(ctx context.Context, feed *claimFeed) {
 		r.metrics.RecordClaim()
 
 		startedProbeAt := time.Now()
+		probeWorkStarted := time.Now()
 		result := r.runProbe(ctx, claim.URL)
 		r.metrics.AddProbeTraffic(result.UploadBytes, result.DownloadBytes)
 
@@ -1105,6 +1184,7 @@ func (r *Runner) workerLoop(ctx context.Context, feed *claimFeed) {
 		meta := r.probeOutcomeMeta(ctx, claim.URL, result)
 		r.sampleHTTPS(ctx, claim.URL, result, &meta)
 		r.sampleTargetProfileWithinLease(ctx, claim.URL, result, &meta, startedProbeAt)
+		meta.SourceProbeDurationMS = time.Since(probeWorkStarted).Milliseconds()
 		if !r.commitProbeResult(ctx, claim, result, meta) {
 			return
 		}

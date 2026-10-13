@@ -28,14 +28,15 @@ type plannedSource struct {
 	priority, score int64
 }
 type sourceLearningReport struct {
-	Prepared   bool   `json:"prepared"`
-	Generation uint64 `json:"generation,omitempty"`
-	Enabled    bool   `json:"enabled"`
-	Configured int    `json:"configured"`
-	Selected   int    `json:"selected"`
-	Skipped    int    `json:"skipped"`
-	Exploring  int    `json:"exploring"`
-	Measured   int    `json:"measured"`
+	Prepared        bool   `json:"prepared"`
+	Generation      uint64 `json:"generation,omitempty"`
+	Enabled         bool   `json:"enabled"`
+	Configured      int    `json:"configured"`
+	Selected        int    `json:"selected"`
+	Skipped         int    `json:"skipped"`
+	Exploring       int    `json:"exploring"`
+	Measured        int    `json:"measured"`
+	AdmissionCooled int    `json:"admission_cooled"`
 }
 type sourcePlanState struct {
 	mu     sync.RWMutex
@@ -89,9 +90,20 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 	for _, id := range ids {
 		candidates = append(candidates, SourceLearningCandidate{ID: id, FallbackPriority: sourcePriority(r.config.SourceSpecs[indexes[id]]), Quality: quality[id]})
 	}
-	plan := BuildSourceLearningPlan(candidates, generation, now, SourceLearningConfig{Enabled: true, MinSamples: 8, HalfLife: 7 * 24 * time.Hour, LowYieldThreshold: 0.02, LowYieldCooldown: 24 * time.Hour, ExplorationInterval: 10})
+	learningConfig := SourceLearningConfig{
+		Enabled: true, MinSamples: 8, HalfLife: 7 * 24 * time.Hour,
+		LowYieldThreshold: 0.02, LowYieldCooldown: 24 * time.Hour, ExplorationInterval: 10,
+		ZeroAdmissionCooldown:  r.config.SourceLearningZeroAdmissionCooldown,
+		ZeroAdmissionRefreshes: int64(r.config.SourceLearningZeroAdmissionRefreshes),
+	}
+	plan := BuildSourceLearningPlan(candidates, generation, now, learningConfig)
 	feeds := make(map[string]plannedSource, len(plan))
 	report := sourceLearningReport{Enabled: true, Prepared: true, Generation: generation, Configured: len(ids), Selected: len(plan), Skipped: len(ids) - len(plan)}
+	for _, candidate := range candidates {
+		if shouldCoolZeroAdmission(candidate, now, learningConfig) {
+			report.AdmissionCooled++
+		}
+	}
 	for _, item := range plan {
 		index := indexes[item.ID]
 		score, err := store.EncodeSourceStageScore(item.Priority, index)

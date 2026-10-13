@@ -26,6 +26,8 @@ func main() {
 		err = parseCommand(os.Args[2:], os.Stdout)
 	case "monitor":
 		err = monitorCommand(os.Args[2:])
+	case "feed-audit":
+		err = feedAuditCommand(os.Args[2:], os.Stdout)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return
@@ -110,6 +112,7 @@ func usage(out io.Writer) {
 
 Usage:
   FreeProxyAPI parse -input FILE [-default-scheme http]
+  FreeProxyAPI feed-audit [-input /dev/stdin] [-timeout 20s] [-concurrency 2] [-max-bytes 33554432] [-max-records 100000]
   FreeProxyAPI monitor -config FILE [-worker-id ID]
 `)
 }

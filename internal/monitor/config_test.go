@@ -47,6 +47,9 @@ func TestLoadConfigAppliesSafetyDefaults(t *testing.T) {
 	if config.NetworkValidationEnabled {
 		t.Error("network validation must default to disabled")
 	}
+	if config.SourceLearningZeroAdmissionCooldown != 0 || config.SourceLearningZeroAdmissionRefreshes != 3 {
+		t.Fatalf("zero-admission defaults = %s/%d, want disabled cooldown and 3 refreshes", config.SourceLearningZeroAdmissionCooldown, config.SourceLearningZeroAdmissionRefreshes)
+	}
 	if config.DiscardFailedCandidates {
 		t.Error("discard_failed_candidates must default to false")
 	}
@@ -169,6 +172,41 @@ func TestLoadConfigEnforcesLimits(t *testing.T) {
 	for name, body := range cases {
 		if _, err := LoadConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("%s: LoadConfig accepted an unsafe configuration", name)
+		}
+	}
+}
+
+func TestLoadConfigParsesZeroAdmissionCooldown(t *testing.T) {
+	config, err := LoadConfig(writeConfig(t, `{
+		"sources": ["file:///data/proxies.txt"],
+		"source_learning_zero_admission_cooldown": "1h",
+		"source_learning_zero_admission_refreshes": 6
+	}`))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if config.SourceLearningZeroAdmissionCooldown != time.Hour || config.SourceLearningZeroAdmissionRefreshes != 6 {
+		t.Fatalf("zero-admission config = %s/%d", config.SourceLearningZeroAdmissionCooldown, config.SourceLearningZeroAdmissionRefreshes)
+	}
+	if zero, err := LoadConfig(writeConfig(t, `{
+		"sources": ["file:///data/proxies.txt"],
+		"source_learning_zero_admission_cooldown": "0s"
+	}`)); err != nil || zero.SourceLearningZeroAdmissionCooldown != 0 || zero.SourceLearningZeroAdmissionRefreshes != 3 {
+		t.Fatalf("explicit disabled cooldown = %s/%d err=%v", zero.SourceLearningZeroAdmissionCooldown, zero.SourceLearningZeroAdmissionRefreshes, err)
+	}
+}
+
+func TestLoadConfigRejectsInvalidZeroAdmissionCooldown(t *testing.T) {
+	for _, body := range []string{
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_cooldown":"-1s"}`,
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_cooldown":"25h"}`,
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_cooldown":"soon"}`,
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_refreshes":0}`,
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_refreshes":2}`,
+		`{"sources":["file:///d/p.txt"],"source_learning_zero_admission_refreshes":101}`,
+	} {
+		if _, err := LoadConfig(writeConfig(t, body)); err == nil {
+			t.Errorf("LoadConfig accepted invalid zero-admission config %s", body)
 		}
 	}
 }

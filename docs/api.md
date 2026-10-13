@@ -207,10 +207,143 @@ Nothing is stored.
 | `/` and `/dashboard` | Built-in homepage and operations dashboard. |
 | `/dashboard/data?range=1h\|6h\|24h` | Dashboard JSON backed by Prometheus; cached 15 seconds per range. |
 
+## Operator source report
+
+`GET /report/sources` returns bounded source quality and cost aggregates for the
+current configured source catalog. It is an operator endpoint served on the
+same `admin_listen_addr` listener as `/report` and `/metrics`; if
+`admin_listen_addr` is empty, it shares the main listener for compatibility.
+Keep that listener private or prevent public ingress from forwarding it. The
+response contains 32-character lowercase hexadecimal source IDs and effective
+parser schemes, not source URLs, feed contents, or proxy endpoints. Each ID is
+derived from the exact trimmed feed URL and parser-scheme hint. It is `no-store`
+and accepts `GET` and `HEAD`.
+
+When source learning is disabled, the response status is `disabled`. Otherwise
+it includes a bounded current-catalog snapshot. `quality_captured_at`,
+`quality_age_seconds`, and `quality_stale` describe the local in-process cache
+(up to one minute); `source_counts_at`, `source_counts_age_seconds`, and
+`source_counts_observed` describe the latest validated-set scan/aggregate. The
+quality and candidate-count reads occur separately, so the report is not an
+atomic cross-section. Check the timestamps before comparing fields. If source
+counts were not observed, the per-source `validated` and `routing_eligible`
+fields and the unattributed totals are omitted. If a quality field has no
+measurement yet or its quality record is corrupt, its `*_measured` flag is
+false and its numeric fields are omitted; an omitted value is unknown, not zero.
+
+The report distinguishes source history from current candidate attribution:
+`admitted` counts actual new candidate-set insertions, not staged source rows.
+Each candidate keeps one selected source origin. Duplicate feed appearances
+do not create multiple source votes. `unattributed_validated` and
+`unattributed_routing_eligible` count validated candidates whose source ID is
+missing or no longer belongs to the configured catalog; they cannot be assigned
+to a current source. The shared Redis aggregate uses `unattributed_routing` for
+the routing-eligible counterpart; the report field uses the more explicit
+`unattributed_routing_eligible` name.
+
+The shared validated aggregate carries source-count maps between replicas, but
+the public `/stats` schema deliberately omits source attribution. Operators see
+that attribution through `/report/sources` only.
+
+`routing_eligible` is the subset of validated candidates meeting the current
+strict router evidence: success ratio at least 80%, a positive success streak,
+a passing fresh HTTPS/CONNECT check, and a fresh clean tamper check, with age
+bounded by `classification_max_age`. It is a point-in-time filter count, not a
+claim that the proxy will remain usable.
+
+Admission refresh fields (`admission_refreshes`, `last_admitted`,
+`zero_admission_streak`, and `last_admission_at`) are updated only for a whole
+successful refresh pass and sources whose pass was not truncated or affected by
+the candidate cap. Failed, skipped, truncated, and capped sources do not add a
+zero-admission observation. `admitted` itself counts atomic new set insertions
+and may include accepted additions from a pass whose later step failed; it is
+not the same as a completed admission observation.
+
+Fetch cost fields sum HTTP client attempts, consumed HTTP response-body bytes,
+and elapsed stream work. Attempts count calls to the HTTP client; bytes exclude
+headers and TLS framing, and a conditional `304` has zero response-body bytes
+even though the cached body is replayed to the parser. Elapsed time covers the
+whole stream callback, including parsing and staging, rather than pure HTTP
+latency. File feeds contribute zero HTTP attempts and network bytes.
+
+Probe cost fields count committed probe outcomes only, after lease and probe
+contract checks. Elapsed work includes the primary probe and any auxiliary
+checks executed within that lease. It is not total CPU time or a complete
+source-cost measure. Changing the base probe contract resets probe-cost
+history for the new contract; legacy quality hashes without these fields remain
+unmeasured until new observations arrive. A stored probe contract alone is not
+enough: probe-cost fields are measured only when the current contract matches
+and committed probe-completion counters exist. Source quality hashes expire
+after 30 days, so cumulative counters restart after expiry.
+
+Per-source Prometheus efficiency series are published only by the stats leader
+when both `source_learning_enabled` and `stats_leader_enabled` are true. With
+either feature disabled, these per-source series are absent. Only the unique
+lease holder exports them; followers suppress their per-source series. The
+JSON report remains usable independently of stats-leader publication when
+source learning is enabled. The metric families include
+`freeproxyapi_source_admitted_total`,
+`freeproxyapi_source_admission_refreshes_total`,
+`freeproxyapi_source_http_attempts_total`,
+`freeproxyapi_source_response_bytes_total`,
+`freeproxyapi_source_fetch_work_milliseconds_total`,
+`freeproxyapi_source_probe_completions_total`,
+`freeproxyapi_source_probe_successful_completions_total`,
+`freeproxyapi_source_probe_work_milliseconds_total`,
+`freeproxyapi_source_validated`,
+`freeproxyapi_source_routing_eligible`, and
+`freeproxyapi_source_zero_admission_streak`. The unattributed count and
+snapshot families `freeproxyapi_source_unattributed_validated`,
+`freeproxyapi_source_unattributed_routing_eligible`,
+`freeproxyapi_source_efficiency_quality_snapshot_age_seconds`,
+`freeproxyapi_source_efficiency_counts_snapshot_age_seconds`, and
+`freeproxyapi_source_efficiency_counts_observed` have no per-source label.
+Per-source series use the bounded `source_id` hash label, never a URL or
+endpoint.
+
+## Feed-audit CLI
+
+The read-only `feed-audit` CLI rechecks feed retrieval and parsing without
+probing listed endpoints or connecting to Redis. It reads an input JSON array
+from a file (default `/dev/stdin`):
+
+```json
+[{"url":"https://feeds.example.net/proxies.txt","scheme":"http"}]
+```
+
+The URL must be HTTP(S), without user information or a fragment, and no longer
+than 8,192 characters. The complete batch is validated before requests start;
+private IP literals and `localhost` are rejected up front, and resolved
+hostnames are checked against the source fetcher's public-address dial policy.
+`scheme` is the default parser scheme for bare records and may be `http`,
+`socks4`, or `socks5`; it defaults to `http`. There is no automatic scheme
+inference. The fetcher rejects redirects. The command writes no files and does
+not expose source URLs, response bodies, proxy endpoints, or raw fetch errors.
+
+The JSON input is limited to 1 MiB and 128 source records.
+Defaults are a 20-second per-source timeout, two workers, 32 MiB maximum
+response body per source, and 100,000 accepted records per source. Concurrency
+is restricted to 1–4, timeout to at most 90 seconds, and the byte and record
+caps cannot exceed those defaults. Reaching the record cap marks a result
+truncated and ineligible; an empty parsed set is also ineligible, and either
+result omits the canonical-set hash. Results
+are JSON Lines with source ID, input index, parser scheme, eligibility,
+truncation, parsed-unique and rejected counts, counts by endpoint scheme,
+fetch-cost fields, optional canonical-set hash, and a bounded error code or
+HTTP status; HTTP status errors also include the numeric `http_status` field.
+Timeouts, cancellation, byte limits, record limits, and other fetch/parse
+errors have bounded codes. Eligibility requires a completed fetch and parse, a
+nonempty canonical set, and no record cap.
+
+The CLI's `http_attempts`, `network_bytes`, and `duration_ms` use the same
+measurement definitions as the source report: response-body reader bytes only,
+cached replay excluded, and duration includes parsing work.
+
 ## Operator endpoints
 
-`/metrics` (Prometheus), `/report` (monitor status and validation counts, never
-proxy URLs) and the internal API `/internal/api/v1/proxies` (bearer token, off
-unless `internal_api_token_file` is set) are for operators. Serve them on
+`/metrics` (Prometheus), `/report` (monitor status and validation counts),
+`/report/sources` (source IDs and aggregate measurements), and the internal API
+`/internal/api/v1/proxies` (bearer token, off unless
+`internal_api_token_file` is set) are for operators. Serve them on
 `admin_listen_addr` and keep them off the public internet; see the
 [README](../README.md#configuration) and [deployment guide](deployment.md).

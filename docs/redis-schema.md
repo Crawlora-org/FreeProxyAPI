@@ -11,7 +11,7 @@ prefix. Every key below is relative to `namespace`, which defaults to
 | `<ns>:candidates` | SET | SHA-256 hex of every canonical endpoint URL currently tracked. |
 | `<ns>:source-unique` | STRING | Cross-source unique canonical endpoint count from the latest completed source refresh. |
 | `<ns>:source-refresh-stats` | HASH | `parsed` valid records and `succeeded` source count from the latest completed source refresh. |
-| `<ns>:proxy:<id>` | HASH | Per-candidate record. `url` is the credential-free endpoint string; `last_checked_at_ms`, `last_ok_at_ms` (time of the latest successful probe), `last_status` (`ok`/`failed`), `last_http_status`, `last_latency_ms`, `last_error` (a short failure code from `probe.ClassifyError`, at most 32 bytes, such as `connect_timeout`, `refused`, or `bad_status_4xx`; empty after a success — raw transport errors are not stored, which keeps every field under `hash-max-listpack-value` so the hash stays a compact listpack), the `consecutive_failures` streak, and stability history — `results10` (last ten outcomes as 1/0), `ok_ratio_pct`, `latency_ewma_ms`, `jitter_ewma_ms` — describe history. Optional `country` (ISO), `asn`, `anonymity` (elite/anonymous/transparent), `exit_ip`, and `exit_country` (GeoIP country of the observed exit IP) annotations come from an operator-supplied GeoIP database plus an optional configured echo endpoint, and are never cleared by a later empty lookup. `anonymity_checked_at_ms` is set whenever any of `anonymity`/`exit_ip`/`exit_country` is written; readers treat those fields as unknown once older than `classification_max_age` or when the timestamp is absent. A sampled HTTPS-capability check writes `https_ok` (`1`/`0`) with `https_checked_at_ms`, and `https_tunnel_scheme` (`http`, `https`, or a SOCKS scheme) after a successful check; these are unchanged when no check ran. An anonymity echo check that returned 200 and was compared for tampering writes `tampered` (`1` when the proxy modified the echo body or injected response headers, `0` when clean) with `tamper_checked_at_ms`; both are unchanged when no tamper check ran, and readers treat `tampered` as unknown once older than `classification_max_age` or when the timestamp is absent. Lease fields are `lease_token`, `lease_owner`, and `lease_expires_at_ms`. |
+| `<ns>:proxy:<id>` | HASH | Per-candidate record. `url` is the credential-free endpoint string; when source learning is enabled, `source_id` is the selected first source origin while that source remains configured. `last_checked_at_ms`, `last_ok_at_ms` (time of the latest successful probe), `last_status` (`ok`/`failed`), `last_http_status`, `last_latency_ms`, `last_error` (a short failure code from `probe.ClassifyError`, at most 32 bytes, such as `connect_timeout`, `refused`, or `bad_status_4xx`; empty after a success — raw transport errors are not stored, which keeps every field under `hash-max-listpack-value` so the hash stays a compact listpack), the `consecutive_failures` streak, and stability history — `results10` (last ten outcomes as 1/0), `ok_ratio_pct`, `latency_ewma_ms`, `jitter_ewma_ms` — describe history. Optional `country` (ISO), `asn`, `anonymity` (elite/anonymous/transparent), `exit_ip`, and `exit_country` (GeoIP country of the observed exit IP) annotations come from an operator-supplied GeoIP database plus an optional configured echo endpoint, and are never cleared by a later empty lookup. `anonymity_checked_at_ms` is set whenever any of `anonymity`/`exit_ip`/`exit_country` is written; readers treat those fields as unknown once older than `classification_max_age` or when the timestamp is absent. A sampled HTTPS-capability check writes `https_ok` (`1`/`0`) with `https_checked_at_ms`, and `https_tunnel_scheme` (`http`, `https`, or a SOCKS scheme) after a successful check; these are unchanged when no check ran. An anonymity echo check that returned 200 and was compared for tampering writes `tampered` (`1` when the proxy modified the echo body or injected response headers, `0` when clean) with `tamper_checked_at_ms`; both are unchanged when no tamper check ran, and readers treat `tampered` as unknown once older than `classification_max_age` or when the timestamp is absent. Lease fields are `lease_token`, `lease_owner`, and `lease_expires_at_ms`. |
 | `<ns>:tomb:<id>` | STRING | Eviction tombstone `"<strikes>:<blocked_until_ms>"` written when a candidate is evicted after `max_consecutive_failures` or discarded by `discard_failed_candidates`. Each strike blocks re-adding for `evicted_backoff_base * 2^(strikes-1)` capped at `evicted_backoff_max`; source refreshes skip (no SADD/HSET/ZADD) endpoints that are not current candidates while blocked, and never priority-promote them. The key expires `block + max(block, 2 * max(1, max_consecutive_failures) * failed_retest_interval)` after the eviction, so strike memory survives one re-add and re-eviction cycle and then disappears on its own. |
 | `<ns>:pending` | ZSET | Candidates waiting to be tested. Score is due-at epoch milliseconds. |
 | `<ns>:leased` | ZSET | Candidates currently leased across all replicas. Score is lease-expiry epoch milliseconds. |
@@ -25,7 +25,7 @@ prefix. Every key below is relative to `namespace`, which defaults to
 | `<ns>:once:<name>:lock` | STRING | Token-owned lock held while a one-shot job runs. Renewed every TTL/3 by the owner; if a renewal finds another token, the job's context is cancelled and no completion marker is written. |
 | `<ns>:probe-budget:<YYYYMMDDHHMM>` | STRING counter | Global per-minute probe budget shared by every replica. Incremented and given a two-minute expiry atomically. Replicas reserve permits in chunks (`probe_permit_chunk`, default `max(10, workers/4)`) with a Lua `INCRBY` capped at `limit - used`, so the counter never exceeds the limit; permits a replica still holds when the minute ends are discarded, bounding waste to one chunk per replica per window. |
 | `<ns>:stats-leader` | STRING | Random token of the replica that holds the stats-leader lease. Taken with `SET NX PX` semantics and renewed on every stats publish (TTL `stats_leader_ttl`, default 90s); released on graceful shutdown. Only the holder scans the validated set. |
-| `<ns>:validated-aggregate` | STRING (JSON) | Identity-free validated-set aggregate written by the stats leader, only while its lease token matches: `computed_at_ms`, `by_country`, `stable_by_country`, `by_asn`, `by_anonymity`, `by_latency_band`, `stable`, `band_known`, `geo_mismatch`. TTL `stats_aggregate_ttl` (default 5m). Followers ignore it once older than two publish intervals (60s) and scan locally instead. |
+| `<ns>:validated-aggregate` | STRING (JSON) | Validated-set aggregate written by the stats leader, only while its lease token matches: `computed_at_ms`, `by_country`, `stable_by_country`, `by_asn`, `by_anonymity`, `by_latency_band`, `stable`, `band_known`, `geo_mismatch`, and (when source learning is active) `by_source`, `routing_by_source`, `source_counts_observed`, `unattributed_validated`, and `unattributed_routing`. Source maps contain counts only, keyed by source ID. TTL `stats_aggregate_ttl` (default 5m). Followers ignore it once older than two publish intervals (60s) and scan locally instead. |
 
 ## Source learning and quality history
 
@@ -46,6 +46,53 @@ after 30 days. Attribution is limited to the active source catalog; the
 `source_learning_local` field in `/report` describes this monitor's local plan,
 not a cluster-wide plan.
 
+The same hash may also hold bounded measurement counters:
+
+- `admitted` accumulates candidate IDs newly inserted into the tracked candidate
+  set by atomic upsert, not rows staged by a feed. It can include real insertions
+  from a refresh that later fails.
+- `admission_refreshes`, `last_admitted`, `zero_admission_streak`, and
+  `last_admission_ms` describe completed whole-refresh observations. They are
+  updated only when a source participated in a successful, uncapped and
+  untruncated refresh pass. Failed, skipped, truncated, or candidate-cap-affected
+  source passes are excluded. `zero_admission_streak` counts consecutive
+  qualifying observations with zero new candidate IDs.
+- `http_attempts`, `network_bytes`, `fetch_duration_ms`, and
+  `fetch_cost_observations` accumulate source-fetch measurements. Attempts
+  count HTTP client calls; bytes count consumed HTTP response-body reader bytes,
+  excluding headers and TLS framing. A `304` cached-body replay has zero
+  response-body bytes. Duration is elapsed time for the full stream and its
+  parser/staging callback, not pure HTTP latency. File feeds have zero HTTP
+  attempts and network bytes.
+- `probe_completions`, `probe_successful_completions`, and `probe_duration_ms`
+  accumulate primary and auxiliary probe work only when the result commits under
+  a valid lease and current base-probe contract. Contract changes reset these
+  counters alongside sampled probe quality for the new contract. Duration is
+  elapsed work, not CPU time or an all-inclusive source cost. A stored
+  `probe_contract` by itself does not mean probe-cost fields were measured;
+  committed completion counters must exist and the contract must match the
+  current configuration.
+
+These fields are additive and omitted from report output until measured;
+legacy hashes do not imply zero observations. The source-quality hash expires
+after 30 days, so its cumulative counters reset after expiry. `/report/sources`
+reads a bounded quality snapshot and the validated-source count snapshot
+separately. `quality_captured_at`/`quality_age_seconds` and
+`source_counts_at`/`source_counts_age_seconds` expose their freshness; the two
+reads are not atomic. Missing or retired candidate provenance contributes to
+`unattributed_validated` and `unattributed_routing`, rather than being assigned
+to a configured source.
+The aggregate JSON field `unattributed_routing` is exposed by the operator
+report as `unattributed_routing_eligible`; neither field is part of public
+`/stats`.
+
+Per-source validated counts in `validated-aggregate` are only an aggregate
+snapshot. `routing_by_source` uses current strict routing evidence: at least 80%
+success ratio, positive success streak, fresh passing HTTPS/CONNECT evidence,
+and fresh clean tamper evidence within `classification_max_age`. Source IDs
+are hashes of the exact trimmed source URL and parser-scheme hint; the URL is
+not stored in the source-ID label or report.
+
 Candidate hashes may additionally hold `success_streak`, optional exit fields,
 `target_profiles`, and `reliability_started_at_ms` plus `reliability_buckets`.
 The reliability value is a sparse comma-separated sequence of
@@ -65,8 +112,8 @@ replace it while that origin remains configured. When an origin is removed, a
 later accepted upsert may attribute the candidate to a currently active source.
 Each source-quality hash also stores a `probe_contract` fingerprint for the
 base target URL, probe mode, and expected body. Changed contracts reset sampled
-probe counters before accumulating new evidence; fetch counters and reliability
-history remain separate.
+probe counters and committed probe-cost counters before accumulating new
+evidence; fetch counters and proxy reliability history remain separate.
 
 Each source-quality hash contains fetch counters, incremental
 unique/duplicate counts, cooldown timestamps, and decayed probe sample/pass
