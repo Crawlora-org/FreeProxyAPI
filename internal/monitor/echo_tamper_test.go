@@ -59,6 +59,24 @@ func TestRecordEchoTamperSetsMetaAndMetrics(t *testing.T) {
 	}
 }
 
+func TestProbeOutcomeMetaPreservesTamperOnlyProbeVerdict(t *testing.T) {
+	runner := newBudgetTestRunner(t, 10)
+	result := probe.Result{Anonymity: probe.AnonymityResult{
+		TamperChecked: true,
+		Tampered:      true,
+		TamperReason:  "nonce",
+	}}
+	meta := runner.probeOutcomeMeta(context.Background(), "http://192.0.2.10:8080", result)
+	if !meta.TamperChecked || !meta.Tampered {
+		t.Fatalf("tamper-only probe verdict lost: %+v", meta)
+	}
+	var b strings.Builder
+	runner.accuracy.metrics.appendTo(&b)
+	if !strings.Contains(b.String(), `freeproxyapi_echo_tamper_results_total{outcome="tampered"} 1`) {
+		t.Fatalf("tamper-only probe verdict missing from metrics:\n%s", b.String())
+	}
+}
+
 func TestProxyFilterParsesExcludeTampered(t *testing.T) {
 	for _, path := range []string{"/proxies?exclude_tampered=true", "/internal/api/v1/proxies?exclude_tampered=true&anonymity=elite"} {
 		filter, err := proxyFilter(httptest.NewRequest("GET", path, nil))

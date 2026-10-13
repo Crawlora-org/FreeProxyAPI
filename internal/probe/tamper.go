@@ -98,6 +98,21 @@ func (e *EchoClient) tamperProfile(echoURL string, requested *url.URL) (bool, *h
 	return true, newHeaderBaseline(b.samples...)
 }
 
+// annotateCombinedEcho applies the same endpoint profile and body/header
+// checks used by Check to an echo response already fetched as a reachability
+// probe. This lets the monitor reuse that single request for both purposes.
+func (e *EchoClient) annotateCombinedEcho(echoURL string, requested *url.URL, nonce string, headers http.Header, payload string, classified AnonymityResult) (bool, AnonymityResult) {
+	eligible, baseline := e.tamperProfile(echoURL, requested)
+	if !eligible {
+		return false, classified
+	}
+	reason := echoTamperReason(requested, nonce, headers, payload, baseline)
+	classified.TamperChecked = true
+	classified.Tampered = reason != ""
+	classified.TamperReason = reason
+	return true, classified
+}
+
 func newHeaderBaseline(samples ...http.Header) *headerBaseline {
 	out := &headerBaseline{names: map[string]struct{}{}, counts: map[string]int{}}
 	for _, h := range samples {

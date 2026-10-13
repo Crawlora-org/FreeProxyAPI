@@ -200,6 +200,11 @@ func publicProxyCacheKey(filter store.ProxyFilter, offset int) [sha256.Size]byte
 	} else {
 		_, _ = hash.Write([]byte{0})
 	}
+	if filter.RequireTamperChecked {
+		_, _ = hash.Write([]byte{1})
+	} else {
+		_, _ = hash.Write([]byte{0})
+	}
 	writeInt64(filter.ClassificationMaxAgeMs)
 	if filter.Limit > 0 {
 		writeInt64(int64(filter.Limit))
@@ -275,6 +280,13 @@ func (c *publicProxyResponseCache) staleLocked(key [sha256.Size]byte, now time.T
 // response is reported as cached with a remaining TTL of zero. A key with no
 // entry at all still loads synchronously and can fail.
 func (c *publicProxyResponseCache) getOrLoad(ctx context.Context, key [sha256.Size]byte, load func(context.Context) ([]byte, error)) ([]byte, time.Duration, bool, error) {
+	return c.getOrLoadWithStale(ctx, key, true, load)
+}
+
+// getOrLoadWithStale can disable stale fallback for filters whose correctness
+// depends on recent classifications. Normal cache hits and in-flight request
+// coalescing are unchanged.
+func (c *publicProxyResponseCache) getOrLoadWithStale(ctx context.Context, key [sha256.Size]byte, allowStale bool, load func(context.Context) ([]byte, error)) ([]byte, time.Duration, bool, error) {
 	runLoad := func() ([]byte, error) {
 		release, err := c.acquireLoadSlot()
 		if err != nil {
@@ -291,25 +303,27 @@ func (c *publicProxyResponseCache) getOrLoad(ctx context.Context, key [sha256.Si
 		c.mu.Unlock()
 		return body, remaining, true, nil
 	}
-	if body, ok := c.staleLocked(key, now); ok {
-		if c.inFlight[key] == nil && len(c.inFlight) < c.maxInFlight {
-			flight := &publicProxyCacheFlight{done: make(chan struct{})}
-			c.inFlight[key] = flight
-			go func() {
-				fresh, err := runLoad()
-				if err == nil {
-					c.put(key, fresh)
-				} else if c.onRefreshFailure != nil {
-					c.onRefreshFailure(err)
-				}
-				c.finishFlight(key, flight, fresh, err)
-			}()
+	if allowStale {
+		if body, ok := c.staleLocked(key, now); ok {
+			if c.inFlight[key] == nil && len(c.inFlight) < c.maxInFlight {
+				flight := &publicProxyCacheFlight{done: make(chan struct{})}
+				c.inFlight[key] = flight
+				go func() {
+					fresh, err := runLoad()
+					if err == nil {
+						c.put(key, fresh)
+					} else if c.onRefreshFailure != nil {
+						c.onRefreshFailure(err)
+					}
+					c.finishFlight(key, flight, fresh, err)
+				}()
+			}
+			c.mu.Unlock()
+			if c.onStale != nil {
+				c.onStale()
+			}
+			return body, 0, true, nil
 		}
-		c.mu.Unlock()
-		if c.onStale != nil {
-			c.onStale()
-		}
-		return body, 0, true, nil
 	}
 	if flight := c.inFlight[key]; flight != nil {
 		c.mu.Unlock()

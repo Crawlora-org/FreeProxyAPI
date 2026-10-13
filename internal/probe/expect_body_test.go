@@ -3,8 +3,10 @@ package probe
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +33,7 @@ func TestRunProbeExpectedBody(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			result := runProbeMode(context.Background(), server.URL, server.URL+"/success.txt", 5*time.Second, "", false, tc.expected, plainDial)
+			result := runProbeMode(context.Background(), server.URL, server.URL+"/success.txt", 5*time.Second, "", false, tc.expected, plainDial, nil)
 			if result.OK != tc.wantOK {
 				t.Fatalf("OK=%t want %t (err=%q)", result.OK, tc.wantOK, result.Error)
 			}
@@ -56,7 +58,7 @@ func TestRunProbeStandardAddsCacheBuster(t *testing.T) {
 	defer server.Close()
 
 	for i := 0; i < 2; i++ {
-		result := runProbeMode(context.Background(), server.URL, server.URL+"/success.txt?keep=1&other=a%20b", 5*time.Second, "", false, "success", plainDial)
+		result := runProbeMode(context.Background(), server.URL, server.URL+"/success.txt?keep=1&other=a%20b", 5*time.Second, "", false, "success", plainDial, nil)
 		if !result.OK {
 			t.Fatalf("probe %d failed: %+v", i, result)
 		}
@@ -111,7 +113,8 @@ func TestRunProbeEchoUnaffectedByCacheBuster(t *testing.T) {
 		headers = append(headers, r.Header.Clone())
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"origin":"203.0.113.50","headers":{}}`))
+		nonce := r.URL.Query().Get(EchoNonceParam)
+		_, _ = fmt.Fprintf(w, `{"args":{"%s":"%s"},"url":"http://%s%s?%s=%s","origin":"203.0.113.50","headers":{}}`, EchoNonceParam, nonce, r.Host, r.URL.Path, EchoNonceParam, nonce)
 	}))
 	defer server.Close()
 	_ = runProbeEcho(context.Background(), server.URL, server.URL+"/get", 5*time.Second, "198.51.100.1", plainDial)
@@ -120,10 +123,11 @@ func TestRunProbeEchoUnaffectedByCacheBuster(t *testing.T) {
 	if len(rawQS) != 1 {
 		t.Fatalf("got %d requests, want 1", len(rawQS))
 	}
-	if rawQS[0] != "" {
-		t.Fatalf("echo probe query = %q, want none", rawQS[0])
+	query, err := url.ParseQuery(rawQS[0])
+	if err != nil || query.Get(EchoNonceParam) == "" || query.Get(cacheBusterParam) != "" || len(query) != 1 {
+		t.Fatalf("echo probe query = %q, want only a nonce", rawQS[0])
 	}
-	if headers[0].Get("Cache-Control") != "" || headers[0].Get("Pragma") != "" {
-		t.Fatalf("echo probe must not send cache headers: %v", headers[0])
+	if headers[0].Get("Cache-Control") != "no-cache" || headers[0].Get("Pragma") != "no-cache" {
+		t.Fatalf("echo probe cache headers = %v, want no-cache", headers[0])
 	}
 }

@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -114,11 +115,13 @@ func TestRunProbeThroughHTTPProxy(t *testing.T) {
 
 func TestRunProbeEchoThroughHTTPProxy(t *testing.T) {
 	requests := 0
+	var seenNonce string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
+		seenNonce = r.URL.Query().Get(EchoNonceParam)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"origin":"198.51.100.7","headers":{}}`))
+		_, _ = fmt.Fprintf(w, `{"args":{"%s":"%s"},"url":"http://%s%s?%s=%s","origin":"198.51.100.7","headers":{}}`, EchoNonceParam, seenNonce, r.Host, r.URL.Path, EchoNonceParam, seenNonce)
 	}))
 	defer server.Close()
 
@@ -132,6 +135,60 @@ func TestRunProbeEchoThroughHTTPProxy(t *testing.T) {
 	if requests != 1 {
 		t.Fatalf("echo probe made %d requests, want 1", requests)
 	}
+	if seenNonce == "" || !result.Anonymity.TamperChecked || result.Anonymity.Tampered {
+		t.Fatalf("echo nonce not verified: nonce=%q anonymity=%+v", seenNonce, result.Anonymity)
+	}
+	if result.UploadBytes <= 0 || result.DownloadBytes <= 0 {
+		t.Fatalf("echo traffic was not counted: upload=%d download=%d", result.UploadBytes, result.DownloadBytes)
+	}
+}
+
+func TestRunProbeEchoRejectsForgedAndMismatchedNonce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body func(*http.Request) string
+	}{
+		{name: "forged unrelated response", body: func(*http.Request) string { return `{"origin":"198.51.100.7"}` }},
+		{name: "nonce mismatch", body: func(r *http.Request) string {
+			return fmt.Sprintf(`{"args":{"%s":"wrong"},"url":"http://%s%s?%s=wrong","origin":"198.51.100.7"}`, EchoNonceParam, r.Host, r.URL.Path, EchoNonceParam)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.body(r))
+			}))
+			defer server.Close()
+			result := runProbeEcho(context.Background(), server.URL, server.URL+"/get", time.Second, "203.0.113.8", plainDial)
+			if result.OK || !result.Anonymity.TamperChecked || !result.Anonymity.Tampered || result.Anonymity.Class != "" {
+				t.Fatalf("invalid echo should fail reachability with tamper verdict: %+v", result)
+			}
+		})
+	}
+}
+
+func TestRunProbeEchoKeepsPlainIPEndpointCompatibility(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "198.51.100.7\n")
+	}))
+	defer server.Close()
+	result := runProbeEcho(context.Background(), server.URL, server.URL+"/ip", time.Second, "203.0.113.8", plainDial)
+	if !result.OK || result.Anonymity.Class != AnonymityElite || result.Anonymity.TamperChecked || result.Anonymity.Tampered {
+		t.Fatalf("plain IP endpoint should remain unverified but usable: %+v", result)
+	}
+}
+
+func TestRunProbeEchoUsesDirectBaselineForConfiguredNonEchoGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"origin":"198.51.100.7"}`)
+	}))
+	defer server.Close()
+	echoClient := &EchoClient{}
+	echoClient.recordBaseline(server.URL+"/get", http.Header{"Server": []string{"fixture"}}, false)
+	result := runProbeMode(context.Background(), server.URL, server.URL+"/get", time.Second, "203.0.113.8", true, "", plainDial, echoClient)
+	if !result.OK || result.Anonymity.Class != AnonymityElite || result.Anonymity.TamperChecked || result.Anonymity.Tampered {
+		t.Fatalf("direct non-echo profile should preserve endpoint compatibility: %+v", result)
+	}
 }
 
 func TestRunProbeEchoRequiresCallerIP(t *testing.T) {
@@ -142,7 +199,7 @@ func TestRunProbeEchoRequiresCallerIP(t *testing.T) {
 	defer server.Close()
 
 	result := runProbeEcho(context.Background(), server.URL, server.URL+"/get", 5*time.Second, "203.0.113.8", plainDial)
-	if result.OK || !strings.Contains(result.Error, "no caller IP") {
+	if result.OK || !strings.Contains(result.Error, "nonce verification") || !result.Anonymity.TamperChecked || !result.Anonymity.Tampered {
 		t.Fatalf("echo probe without caller IP should fail: %+v", result)
 	}
 }

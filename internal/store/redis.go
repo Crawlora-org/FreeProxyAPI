@@ -1886,6 +1886,10 @@ type ProxyFilter struct {
 	// ExcludeTampered -> drop candidates whose latest echo tamper check,
 	// within ClassificationMaxAgeMs, found tampering. Unknown stays included.
 	ExcludeTampered bool
+	// RequireTamperChecked keeps only candidates with a timestamped clean
+	// tamper verdict within ClassificationMaxAgeMs. A zero max age removes the
+	// age limit but still requires a recorded verdict.
+	RequireTamperChecked bool
 	// ClassificationMaxAgeMs > 0 treats anonymity/exit, HTTPS, and tamper
 	// measurements older than this many milliseconds (or never timestamped) as
 	// unknown: they are blanked in results and never match anonymity,
@@ -2012,7 +2016,7 @@ func (s *Redis) QueryValidated(ctx context.Context, f ProxyFilter) ([]QueryProxy
 func hasProxyFilter(f ProxyFilter) bool {
 	return f.Country != "" || f.ExitCountry != "" || f.ASN != "" || f.Anonymity != "" ||
 		f.GeoMismatch || f.MaxLatencyMs > 0 || f.MinRatioPct > 0 || f.MaxAgeMs > 0 || f.HTTPS ||
-		f.ExcludeTampered
+		f.ExcludeTampered || f.RequireTamperChecked
 }
 
 // freshAt reports whether a measurement timestamp is usable under a
@@ -2092,9 +2096,14 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 			}
 			var tampered *bool
 			tamperCheckedAt := num(16)
-			if raw := str(15); raw != "" && freshAt(tamperCheckedAt, nowMs, f.ClassificationMaxAgeMs) {
-				v := raw == "1"
+			tamperValue := str(15)
+			tamperFresh := tamperCheckedAt > 0 && tamperCheckedAt <= nowMs && freshAt(tamperCheckedAt, nowMs, f.ClassificationMaxAgeMs)
+			if tamperValue != "" && freshAt(tamperCheckedAt, nowMs, f.ClassificationMaxAgeMs) {
+				v := tamperValue == "1"
 				tampered = &v
+			}
+			if f.RequireTamperChecked && (!tamperFresh || tamperValue != "0") {
+				continue
 			}
 			if f.ExcludeTampered && tampered != nil && *tampered {
 				continue

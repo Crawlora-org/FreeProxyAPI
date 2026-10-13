@@ -52,6 +52,14 @@ example binds the admin listener to the container's loopback; bind
 | `max_records_per_source` | `250000` | 1–5,000,000 | Most endpoints one feed can add per refresh; the rest are ignored. |
 | `max_candidates` | `0` (off) | ≥ 0 | When positive, stops new candidates being added once the set reaches this size. |
 
+HTTP feeds that return `ETag` or `Last-Modified` can be fetched conditionally.
+A `304 Not Modified` reuses the previously downloaded body and still parses
+and stages its endpoints, so unchanged feeds participate in every refresh.
+The cache is in memory per monitor process: at most 128 feeds, 16 MiB of
+cached bodies, and 1 MiB per body (also bounded by `source_max_bytes`). Larger feeds stream
+without caching. A restart starts with an empty cache, and failed or partially
+consumed bodies are never cached. Local `file://` feeds are always read anew.
+
 See [Securing Redis and bounding feed intake](deployment.md#securing-redis-and-bounding-feed-intake).
 
 ## Validation
@@ -103,7 +111,7 @@ rest of this table controls how soon candidates are probed again.
 | `control_probe_enabled` | `true` | | Each replica fetches `probe_target` directly to detect that the probe origin itself is failing. |
 | `control_probe_interval` | `60s` | at least `1s` | How often the control fetch runs. |
 | `control_probe_failure_threshold` | `3` | 1–100 | After this many consecutive control failures a replica's workers stop claiming work, and failed outcomes are released uncommitted, until one control check succeeds. |
-| `classification_max_age` | `24h` | | Age after which anonymity, exit and HTTPS measurements are treated as unknown in `/proxies`. `/stats` and metrics still count stored values regardless of age. |
+| `classification_max_age` | `24h` | | Age after which anonymity, exit, HTTPS, and tamper measurements are treated as unknown in `/proxies`. `/stats` and metrics still count stored values regardless of age. |
 | `geoip_db_path` | empty | | Optional MaxMind country database. |
 | `geoip_asn_db_path` | empty | | Optional MaxMind ASN database. |
 

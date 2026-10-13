@@ -28,6 +28,7 @@ curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80
 | `min_ratio_pct` | integer 0–100 | Minimum rolling success ratio. |
 | `https` | bool | Only proxies whose latest sampled HTTPS/CONNECT check passed within `classification_max_age`. |
 | `exclude_tampered` | bool | Drop proxies whose latest echo check within `classification_max_age` found modified traffic. Unchecked proxies stay included. |
+| `require_tamper_checked` | bool | Require an explicitly clean, timestamped echo tamper check within `classification_max_age`. Modified, unchecked, and expired results never match. Defaults to false. |
 | `max_age` | duration or seconds | Only proxies whose last successful check is at most this old (for example `30m` or `1800`; maximum `720h`). |
 | `limit` | 1–1000 | Page size. Omitted, zero, negative, or invalid values return 100. Larger values are clamped to the maximum page size, which is 1000 and may be lowered (see [Paging](#paging)). The response `limit` is the size that was used. |
 | `offset` | 0–100000 | Skip this many matches. Use with `has_more` to page. |
@@ -89,8 +90,15 @@ will be lowered to 100 once clients stop relying on large pages. Do not assume a
 
 - `anonymity`, `exit_country`, `https_*`, and `tampered` are omitted or empty
   when never measured or older than `classification_max_age` (default 24h).
-- `tampered: true` means the proxy injected response headers or rewrote the echo
-  body. Tampered proxies stay listed unless you pass `exclude_tampered`.
+- `tampered: true` means the echo check found modified headers or a violated
+  body contract. Separate tamper annotations do not affect listing; a combined
+  echo body-contract failure counts as a failed reachability sample. Use
+  `exclude_tampered` to remove fresh modified results from a query.
+- `require_tamper_checked=true` selects only measured clean echoes. Combine it
+  with `https=true` to also require a passing HTTPS/CONNECT check. It keeps the
+  normal 30-second response cache and request coalescing, but does not serve
+  expired cached responses during a failed or slow refresh. Freshness is
+  evaluated when the response is generated; results remain a snapshot.
 - Anonymity, exit country, and tamper results come from a plain-HTTP echo that
   the proxy itself can influence: treat them as hints, not proof.
 - `url` is always a plain `scheme://host:port` with an ASCII hostname or IP

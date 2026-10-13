@@ -63,6 +63,8 @@ export FREEPROXYAPI_MAX_LATENCY_MS=500
 export FREEPROXYAPI_MIN_RATIO_PCT=90
 export FREEPROXYAPI_GEO_MISMATCH=true
 export FREEPROXYAPI_EXCLUDE_TAMPERED=true
+export FREEPROXYAPI_REQUIRE_TAMPER_CHECKED=true
+export FREEPROXYAPI_HTTPS=true
 export FREEPROXYAPI_LIMIT=250
 ```
 
@@ -71,7 +73,22 @@ observed exit countries respectively. `FREEPROXYAPI_EXCLUDE_TAMPERED`
 (flag `-exclude-tampered`, default `true`) sends `exclude_tampered=true`, so
 the router skips proxies whose latest fresh echo tamper check found injected
 headers or a rewritten body. Set it to `false` to route through them anyway.
-FreeProxyAPI still lists these proxies. `GOST_COUNTRY_FIELD` controls which
+For a measured clean pool, set `FREEPROXYAPI_REQUIRE_TAMPER_CHECKED=true`
+(flag `-require-tamper-checked`) to also reject unchecked or expired tamper
+results. Set `FREEPROXYAPI_HTTPS=true` (flag `-https`) to require a passing
+HTTPS/CONNECT check. Both options default to `false`; the stricter filters can
+leave the pool empty until the monitor has collected matching measurements.
+The router also checks returned clean verdicts and timestamps locally, so an
+older compatible API that ignores the filter cannot supply unchecked proxies.
+The API controls the classification age limit. A clean echo observation does
+not guarantee that other traffic is unchanged.
+In strict mode, an empty pool or a failed API refresh writes and reloads an
+API-only GOST configuration, withdrawing proxy listeners until a matching
+pool returns. Write or reload failures are reported and retried; withdrawal
+takes effect only after GOST accepts the reload.
+
+These filters select entries from FreeProxyAPI's listed pool.
+`GOST_COUNTRY_FIELD` controls which
 country field is used when building dedicated listeners. The Compose template
 keeps the API and proxy listeners on loopback; change the host bind only after
 adding the network controls and authentication appropriate for your deployment.
@@ -96,9 +113,11 @@ kubectl apply -k k8s/overlays/gost-public-sidecar
 kubectl -n gost-public rollout status deployment/gost-public-sidecar --timeout=180s
 ```
 
-The `proxy-router` sidecar fetches immediately and refreshes every minute. If
-the public API is temporarily unavailable, it keeps the last generated GOST
-configuration and retries on the next interval.
+The `proxy-router` sidecar fetches immediately and refreshes every minute. By
+default, if the public API is temporarily unavailable, it keeps the last
+generated GOST configuration and retries on the next interval. With
+`FREEPROXYAPI_REQUIRE_TAMPER_CHECKED=true`, it instead withdraws the proxy
+listeners and retries until a measured clean pool is available.
 
 The overlay needs no bootstrap file. `proxy-router` writes an API-only GOST
 config using the `api-username` and `api-password` from the Secret, so `gost`

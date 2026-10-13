@@ -68,8 +68,10 @@ func TestQueryValidatedTamperFreshnessAndExcludeTampered(t *testing.T) {
 	seed("bad", "tampered", "1", "tamper_checked_at_ms", ms(nowMs-1000))
 	seed("clean", "tampered", "0", "tamper_checked_at_ms", ms(nowMs-1000))
 	seed("stale", "tampered", "1", "tamper_checked_at_ms", ms(nowMs-2*day))
+	seed("stale-clean", "tampered", "0", "tamper_checked_at_ms", ms(nowMs-2*day))
 	seed("legacy", "tampered", "1")
 	seed("unknown")
+	seed("future", "tampered", "0", "tamper_checked_at_ms", ms(nowMs+60_000))
 
 	ctx := context.Background()
 	query := func(f ProxyFilter) map[string]QueryProxy {
@@ -86,7 +88,7 @@ func TestQueryValidatedTamperFreshnessAndExcludeTampered(t *testing.T) {
 	}
 
 	all := query(ProxyFilter{ClassificationMaxAgeMs: day})
-	if len(all) != 5 {
+	if len(all) != 7 {
 		t.Fatalf("all = %d", len(all))
 	}
 	if p := all["bad"]; p.Tampered == nil || !*p.Tampered {
@@ -106,10 +108,12 @@ func TestQueryValidatedTamperFreshnessAndExcludeTampered(t *testing.T) {
 		filter ProxyFilter
 		want   []string
 	}{
-		{name: "fresh only", filter: ProxyFilter{ExcludeTampered: true, ClassificationMaxAgeMs: day}, want: []string{"clean", "stale", "legacy", "unknown"}},
-		{name: "bounded scan", filter: ProxyFilter{ExcludeTampered: true, ClassificationMaxAgeMs: day, Limit: 10}, want: []string{"clean", "stale", "legacy", "unknown"}},
+		{name: "fresh only", filter: ProxyFilter{ExcludeTampered: true, ClassificationMaxAgeMs: day}, want: []string{"clean", "stale", "stale-clean", "legacy", "unknown", "future"}},
+		{name: "bounded scan", filter: ProxyFilter{ExcludeTampered: true, ClassificationMaxAgeMs: day, Limit: 10}, want: []string{"clean", "stale", "stale-clean", "legacy", "unknown", "future"}},
 		// Zero max age trusts stored values of any age, including legacy ones.
-		{name: "any age", filter: ProxyFilter{ExcludeTampered: true}, want: []string{"clean", "unknown"}},
+		{name: "any age", filter: ProxyFilter{ExcludeTampered: true}, want: []string{"clean", "stale-clean", "unknown", "future"}},
+		{name: "strict clean within max age", filter: ProxyFilter{RequireTamperChecked: true, ClassificationMaxAgeMs: day}, want: []string{"clean"}},
+		{name: "strict clean any age still needs timestamp", filter: ProxyFilter{RequireTamperChecked: true}, want: []string{"clean", "stale-clean"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,5 +130,8 @@ func TestQueryValidatedTamperFreshnessAndExcludeTampered(t *testing.T) {
 	}
 	if !hasProxyFilter(ProxyFilter{ExcludeTampered: true}) {
 		t.Fatal("exclude_tampered must count as a filter")
+	}
+	if !hasProxyFilter(ProxyFilter{RequireTamperChecked: true}) {
+		t.Fatal("require_tamper_checked must count as a filter")
 	}
 }

@@ -57,6 +57,15 @@ func TestPublicProxyCacheCanonicalFilterKeyAndExpiry(t *testing.T) {
 	}
 }
 
+func TestPublicProxyCacheStrictFilterIsolation(t *testing.T) {
+	clean := publicProxyCacheKey(store.ProxyFilter{RequireTamperChecked: true, HTTPS: true}, 0)
+	withoutStrict := publicProxyCacheKey(store.ProxyFilter{HTTPS: true}, 0)
+	withoutHTTPS := publicProxyCacheKey(store.ProxyFilter{RequireTamperChecked: true}, 0)
+	if clean == withoutStrict || clean == withoutHTTPS {
+		t.Fatal("strict tamper and HTTPS filters must each produce isolated cache keys")
+	}
+}
+
 func TestPublicProxyCacheEntryAdmitsFullPage(t *testing.T) {
 	proxies := make([]store.QueryProxy, publicProxyMaxLimit)
 	for i := range proxies {

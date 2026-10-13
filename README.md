@@ -69,7 +69,9 @@ flowchart LR
   api --> router[Optional GOST router]
 ```
 
-Feeds are fetched on an interval and deduplicated into a Redis queue. Replicas
+Feeds are fetched on an interval and deduplicated into a Redis queue.
+A bounded in-memory cache uses HTTP validators to avoid downloading unchanged
+feeds; their cached bodies are still parsed and staged on every refresh. Replicas
 claim due candidates with leases, probe them within a shared request budget, and
 record latency, success ratio, anonymity, HTTPS, and tamper results. A proxy is
 listed only after several successful samples, and is re-checked soon after a
@@ -151,6 +153,11 @@ every `/proxies` filter, the response schema, and error codes, is in
 ```sh
 curl 'http://localhost:8080/proxies?country=US&max_latency_ms=1000&limit=10'
 ```
+
+To request a pool with both measured clean echo results and verified HTTPS
+support, combine `require_tamper_checked=true` and `https=true`. Unchecked or
+expired classifications do not match these filters. See the
+[API reference](docs/api.md) for the measurement and caching limits.
 
 Client identity uses the socket peer by default. Configure
 `trusted_proxy_cidrs` only for controlled ingress that strips caller-supplied

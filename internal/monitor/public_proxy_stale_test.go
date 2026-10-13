@@ -99,6 +99,22 @@ func TestPublicProxyCacheServesStaleAndRefreshesOnce(t *testing.T) {
 	}
 }
 
+func TestPublicProxyCacheStrictFilterDoesNotServeStale(t *testing.T) {
+	clock := newStaleClock()
+	cache := staleTestCache(clock)
+	key := publicProxyCacheKey(store.ProxyFilter{RequireTamperChecked: true}, 0)
+	cache.put(key, []byte("old"))
+	clock.advance(publicProxyCacheTTL + time.Second)
+	loads := 0
+	body, _, cached, err := cache.getOrLoadWithStale(context.Background(), key, false, func(context.Context) ([]byte, error) {
+		loads++
+		return []byte("fresh"), nil
+	})
+	if err != nil || cached || string(body) != "fresh" || loads != 1 {
+		t.Fatalf("strict cache result body=%q cached=%v loads=%d err=%v", body, cached, loads, err)
+	}
+}
+
 func TestPublicProxyCacheKeepsServingStaleWhenRefreshFails(t *testing.T) {
 	clock := newStaleClock()
 	cache := staleTestCache(clock)

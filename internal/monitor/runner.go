@@ -1233,7 +1233,7 @@ func (r *Runner) runProbe(ctx context.Context, proxyURL string) probe.Result {
 	r.metrics.AddInflight(1)
 	defer r.metrics.AddInflight(-1)
 	if r.config.ProbeTargetMode == "echo" {
-		return probe.TestEchoWithConnectTimeout(ctx, proxyURL, r.config.ProbeTarget, r.config.RequestTimeout, r.config.ProbeConnectTimeout, r.currentRealIP())
+		return probe.TestEchoWithConnectTimeoutAndClient(ctx, proxyURL, r.config.ProbeTarget, r.config.RequestTimeout, r.config.ProbeConnectTimeout, r.currentRealIP(), r.echo)
 	}
 	return probeFn(ctx, proxyURL, r.config.ProbeTarget, r.config.RequestTimeout)
 }
@@ -1249,7 +1249,10 @@ func (r *Runner) probeOutcomeMeta(ctx context.Context, proxyURL string, result p
 		meta.Anonymity = result.Anonymity.Class
 		meta.ExitIP = result.Anonymity.ExitIP
 		meta.ExitCountry, _ = r.geo.Lookup(result.Anonymity.ExitIP)
-	} else if result.OK && r.echo != nil && r.config.AnonymityCheckURL != "" {
+	}
+	if result.Anonymity.TamperChecked {
+		r.recordEchoTamper(result.Anonymity, &meta)
+	} else if result.Anonymity.Class == "" && result.OK && r.echo != nil && r.config.AnonymityCheckURL != "" {
 		anon := r.checkProxyAnonymity(ctx, proxyURL)
 		if anon.Class != "" {
 			meta.Anonymity = anon.Class
