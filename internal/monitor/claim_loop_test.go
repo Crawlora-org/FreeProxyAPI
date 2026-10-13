@@ -192,9 +192,10 @@ func TestClaimLoopClaimsOnlyAsManyAsTheBudgetAllows(t *testing.T) {
 // End to end with real workers: every due candidate is probed exactly once and
 // committed, whatever the batch boundaries.
 func TestRunProbeWorkersProbesEveryCandidateExactlyOnce(t *testing.T) {
+	// Exercise batching independently of wall-clock lease expiry under race
+	// instrumentation; the separate lease tests cover expiration.
 	clock := newTestClock(time.Now())
 	_, runner := newBucketTestRunner(t, 100000, 50, clock)
-	runner.nowFunc = time.Now
 	runner.scheduleChanged = newWakeNotifier()
 	runner.config.ProbeTarget = "http://target.invalid/ok"
 	runner.config.RequestTimeout = time.Second
@@ -224,16 +225,36 @@ func TestRunProbeWorkersProbesEveryCandidateExactlyOnce(t *testing.T) {
 		runner.runProbeWorkers(ctx, 24)
 		close(done)
 	}()
-	waitFor(t, 10*time.Second, func() bool {
-		stats, err := runner.store.StatsAt(context.Background(), time.Now())
-		return err == nil && stats.Validated == candidates
-	}, "not every candidate was probed and committed")
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("workers did not exit on shutdown")
+	stopWorkers := func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("workers did not exit after cancellation")
+		}
 	}
+	// Stop the workers before the store cleanup closes Redis, including when a
+	// wait or assertion below fails. This avoids cleanup-induced Redis errors
+	// obscuring the original timeout.
+	t.Cleanup(stopWorkers)
+
+	deadline := time.Now().Add(30 * time.Second)
+	var lastStats store.Stats
+	var statsErr error
+	for time.Now().Before(deadline) {
+		lastStats, statsErr = runner.store.StatsAt(context.Background(), clock.now())
+		if statsErr == nil && lastStats.Validated == candidates {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if statsErr != nil || lastStats.Validated != candidates {
+		mu.Lock()
+		probedCount := len(probed)
+		mu.Unlock()
+		t.Fatalf("not every candidate was probed and committed: validated=%d want=%d pending=%d leased=%d probed=%d stats_err=%v", lastStats.Validated, candidates, lastStats.Pending, lastStats.Leased, probedCount, statsErr)
+	}
+	stopWorkers()
 
 	mu.Lock()
 	defer mu.Unlock()
