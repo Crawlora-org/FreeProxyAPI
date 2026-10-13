@@ -86,7 +86,7 @@ failure.
 
 ## Quick start
 
-You need Docker with Compose for the Compose route, or Go 1.27.1 or newer (see
+You need Docker with Compose for the Compose route, or Go 1.27.2 or newer (see
 `go.mod`) to run from source. Redis is only needed to run `monitor` directly.
 
 ### Parse a local feed
