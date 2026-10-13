@@ -892,7 +892,9 @@
     "socks5@https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt",
     "socks5@https://raw.githubusercontent.com/proxio-io/proxy-list/main/all.txt",
     "socks5@https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/ALL/ALL.txt",
-    "socks5@https://rcloak.com/api/proxies/raw?protocol=socks5"
+    "socks5@https://rcloak.com/api/proxies/raw?protocol=socks5",
+    "http@https://raw.githubusercontent.com/abusaeeidx/TazaProxy-Troxy/main/working_proxies.txt",
+    "http@https://raw.githubusercontent.com/rianilham28/proxian/main/out/proxies.txt"
   ],
   "default_proxy_scheme": "http",
   "network_validation_enabled": true,
