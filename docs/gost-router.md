@@ -435,9 +435,12 @@ in each router process rather than shared between replicas, so a Pod restart
 loses its pins. Enabling failover can assign a replacement before TTL expiry
 and starts a new pin lifetime. The separate Service remains cluster-internal.
 
-The live overlay requires a measured success streak of at least one and a
-fresh, explicitly clean tamper check for every router pool. This excludes
-legacy unknown streaks and proxies whose latest completed check failed.
+The live overlay requires a measured success streak of at least one, a
+fresh, explicitly clean tamper check, and a fresh HTTPS tunnel check for every
+router pool. This excludes legacy unknown streaks, proxies whose latest
+completed check failed, and proxies without verified TLS tunnel capability.
+The HTTPS measurement tests a CONNECT or SOCKS tunnel to port 443; it does not
+establish that an upstream permits tunnels to arbitrary other ports.
 The general templates leave these additional requirements disabled.
 
 ### Expose two session ports with Compose
