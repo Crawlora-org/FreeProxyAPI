@@ -50,13 +50,20 @@ The same hash may also hold bounded measurement counters:
 
 - `admitted` accumulates candidate IDs newly inserted into the tracked candidate
   set by atomic upsert, not rows staged by a feed. It can include real insertions
-  from a refresh that later fails.
-- `admission_refreshes`, `last_admitted`, `zero_admission_streak`, and
-  `last_admission_ms` describe completed whole-refresh observations. They are
+  from a refresh that later fails. Any such positive insertion immediately
+  resets `zero_admission_streak`, even if the containing pass later fails or is
+  truncated or capped.
+- `admission_refreshes`, `last_admitted`, and `last_admission_ms` describe
+  completed whole-refresh observations. They are
   updated only when a source participated in a successful, uncapped and
   untruncated refresh pass. Failed, skipped, truncated, or candidate-cap-affected
   source passes are excluded. `zero_admission_streak` counts consecutive
-  qualifying observations with zero new candidate IDs.
+  qualifying observations with zero new candidate IDs since the latest
+  positive admission. A partial positive
+  insertion resets that streak without incrementing `admission_refreshes` or
+  changing `last_admitted`/`last_admission_ms`; those fields still describe only
+  completed full-refresh observations. Duplicate and tombstone-blocked upserts
+  do not reset the streak.
 - `http_attempts`, `network_bytes`, `fetch_duration_ms`, and
   `fetch_cost_observations` accumulate source-fetch measurements. Attempts
   count HTTP client calls; bytes count consumed HTTP response-body reader bytes,

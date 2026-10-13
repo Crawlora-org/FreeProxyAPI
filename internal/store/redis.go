@@ -401,14 +401,16 @@ local last_pair = #ARGV
 local source_id = nil
 if #ARGV % 2 == 0 then source_id = ARGV[#ARGV]; last_pair = #ARGV - 1 end
 local quality_key = nil
+local quality_hash_safe = false
 local record_admission = false
 if source_id then
   quality_key = KEYS[7]
-  -- Efficiency telemetry must never prevent candidate imports. Only enable
-  -- its increment when the existing hash field is a safe integer with room
-  -- for every possible insertion in this bounded batch.
+  -- Efficiency telemetry must never prevent candidate imports. A safe hash
+  -- can have its zero-admission streak reset after a real insertion even when
+  -- its cumulative admitted counter is malformed or full.
   local current_raw = redis.pcall('HGET', quality_key, 'admitted')
   if not (type(current_raw) == 'table' and current_raw.err) then
+    quality_hash_safe = true
     if current_raw == false then current_raw = '0' end
     local current = tonumber(current_raw)
     local max_batch = math.floor((last_pair - 1) / 2)
@@ -455,8 +457,14 @@ for i = 2, last_pair, 2 do
     end
   end
 end
-if source_id and record_admission and source_admitted > 0 then
-  redis.call('HINCRBY', quality_key, 'admitted', tostring(source_admitted))
+if source_id and quality_hash_safe and source_admitted > 0 then
+  -- A partial or capped refresh may still have admitted genuinely new IDs.
+  -- Clear stale zero-yield history immediately, but leave full-refresh
+  -- observation fields to RecordSourceAdmissionRefresh.
+  redis.call('HSET', quality_key, 'zero_admission_streak', '0')
+  if record_admission then
+    redis.call('HINCRBY', quality_key, 'admitted', tostring(source_admitted))
+  end
   redis.call('PEXPIRE', quality_key, '2592000000')
 end
 return {added, skipped}
