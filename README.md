@@ -153,6 +153,7 @@ every `/proxies` filter, the response schema, and error codes, is in
 | `/proxies` | Public, validated proxies, filterable by country, exit country and ASN, exit stability, sampled reliability, target profile, latency, success ratio, anonymity, HTTPS, tamper status, and age. Paged, cached, and rate limited per client IP. |
 | `/stats` | Aggregate counts by country, anonymity, and latency band. Never returns proxy URLs. |
 | `/get` | httpbin-compatible caller-IP echo for operator-controlled checks. |
+| `/get?probe_content=1` | Stable `GET`/`HEAD` plain-text contract for explicitly configured target profiles; served with `Cache-Control: no-store`. Other `/get` queries keep the caller-IP echo behavior. |
 | `/livez`, `/readyz` | Liveness and readiness (`503` when Redis is unavailable). |
 | `/`, `/dashboard`, `/dashboard/data` | Built-in homepage and operations dashboard (the dashboard needs `prometheus_url`). |
 | `/metrics`, `/report` | Operator endpoints: Prometheus metrics and monitor status. Served on `admin_listen_addr` when set. |

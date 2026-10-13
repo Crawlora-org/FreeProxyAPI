@@ -263,13 +263,24 @@ func TestLiveLocalMonitorConfigClassifiesAnonymityViaOwnEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig live-local: %v", err)
 	}
-	if config.ProbeTargetMode != "standard" {
-		t.Fatalf("live-local probe_target_mode = %q, want standard", config.ProbeTargetMode)
+	if config.ProbeTarget != "http://freeproxyapi.crawlora.net/get" || config.ProbeTargetMode != "echo" || config.ProbeExpectedBody != "" {
+		t.Fatalf("live-local owned echo probe = target:%q mode:%q expected_body:%q", config.ProbeTarget, config.ProbeTargetMode, config.ProbeExpectedBody)
 	}
-	// Plain HTTP on purpose: through a CONNECT tunnel an HTTP proxy cannot add
-	// the Via or X-Forwarded-For headers the classification looks for.
-	if got := config.EchoURLs(); len(got) != 1 || got[0] != "http://freeproxyapi.crawlora.net/get" {
-		t.Fatalf("live-local anonymity echo URLs = %q", got)
+	if got := config.EchoURLs(); len(got) != 0 {
+		t.Fatalf("combined echo mode should not make a secondary anonymity request: %q", got)
+	}
+	if got := config.ClassificationEchoURLs(); len(got) != 1 || got[0] != config.ProbeTarget {
+		t.Fatalf("live-local classification echo URLs = %q, want the owned probe target", got)
+	}
+	if !config.SourceLearningEnabled {
+		t.Fatal("live-local source learning should be enabled")
+	}
+	if config.TargetProbeEvery != 64 || len(config.TargetProfiles) != 1 {
+		t.Fatalf("live-local target sampling = every %d with %d profiles, want every 64 with one profile", config.TargetProbeEvery, len(config.TargetProfiles))
+	}
+	profile := config.TargetProfiles[0]
+	if profile.Name != "crawlora-content" || profile.URL != "https://freeproxyapi.crawlora.net/get?probe_content=1" || profile.ExpectedBody != "FreeProxyAPI probe OK" {
+		t.Fatalf("live-local owned target profile = %+v", profile)
 	}
 }
 
@@ -289,8 +300,8 @@ func TestLiveLocalMonitorConfigDisablesPendingRequeue(t *testing.T) {
 		t.Fatalf("live-local throughput settings: workers=%d budget=%d failed_retest=%s",
 			config.Workers, config.GlobalRequestsPerMinute, config.FailedRetestInterval)
 	}
-	if config.HTTPSProbeTarget != "https://detectportal.firefox.com/success.txt" ||
-		config.HTTPSProbeExpectedBody != "success" || config.HTTPSProbeEvery != 4 {
+	if config.HTTPSProbeTarget != "https://freeproxyapi.crawlora.net/get" ||
+		config.HTTPSProbeExpectedBody != "" || config.HTTPSProbeEvery != 4 {
 		t.Fatalf("live-local HTTPS probe settings: target=%q body=%q every=%d",
 			config.HTTPSProbeTarget, config.HTTPSProbeExpectedBody, config.HTTPSProbeEvery)
 	}

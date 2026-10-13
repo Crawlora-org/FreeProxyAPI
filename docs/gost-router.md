@@ -405,9 +405,9 @@ per-client or cookie-based sessions. Set a comma-separated list of up to 128
 unique IDs; each ID is 1–32 ASCII letters, digits, underscores, or hyphens,
 starting with a letter or digit. Ports use sorted ID order starting at
 `GOST_SESSION_BASE_PORT` (default 10000). `GOST_SESSION_TTL` defaults to 10
-minutes and `GOST_SESSION_FAILOVER` defaults to false. The Compose and
-Kubernetes templates leave `GOST_SESSIONS` empty, so no session listeners or
-port mappings are enabled by default.
+minutes and `GOST_SESSION_FAILOVER` defaults to false. The Compose and base
+Kubernetes templates leave `GOST_SESSIONS` empty. The live overlay separately
+enables two named listeners.
 
 The base port must be at least 1024, and the assigned range must fit below
 65536 and avoid the unified/country listeners and GOST Web API port. For
@@ -426,6 +426,14 @@ current eligible pool before TTL expiry. A refresh API error removes the
 session listeners after GOST accepts
 the reload; a requested quality-filter failure may withdraw the
 whole proxy pool.
+
+The live Kubernetes overlay enables `alpha` and `beta` through the separate
+`gost-router-sessions` ClusterIP Service on ports 10000 and 10001. That Service
+uses client-IP affinity so a client's connections reach the same router Pod;
+the listener still uses the existing GOST proxy credentials. Pins are stored
+in each router process rather than shared between replicas, so a Pod restart
+loses its pins. Enabling failover can assign a replacement before TTL expiry
+and starts a new pin lifetime. The separate Service remains cluster-internal.
 
 ### Expose two session ports with Compose
 

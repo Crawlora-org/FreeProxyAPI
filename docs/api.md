@@ -203,6 +203,7 @@ Nothing is stored.
 | --- | --- |
 | `/livez` | Liveness. |
 | `/readyz` | Readiness; `503` when Redis is unavailable or the process is draining. |
+| `/get?probe_content=1` | Stable `FreeProxyAPI probe OK` plaintext for explicitly configured target profiles; `GET`/`HEAD`, `text/plain; charset=utf-8`, `Cache-Control: no-store`. Other `/get` queries retain the normal caller-IP echo behavior. |
 | `/` and `/dashboard` | Built-in homepage and operations dashboard. |
 | `/dashboard/data?range=1h\|6h\|24h` | Dashboard JSON backed by Prometheus; cached 15 seconds per range. |
 

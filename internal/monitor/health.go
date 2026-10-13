@@ -565,6 +565,10 @@ func (h *healthHandlers) dashboardData(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *healthHandlers) echo(w http.ResponseWriter, r *http.Request) {
+	if isProbeContentRequest(r) {
+		h.probeTarget(w, r)
+		return
+	}
 	if !requireGetOrHead(w, r) {
 		return
 	}

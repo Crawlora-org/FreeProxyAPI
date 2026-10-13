@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gost-router-sessions
+  namespace: freeproxyapi
+  labels:
+    app.kubernetes.io/name: gost-router
+    app.kubernetes.io/part-of: freeproxyapi
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  selector:
+    app.kubernetes.io/name: gost-router
+  ports:
+    - name: session-alpha
+      port: 10000
+      targetPort: session-alpha
+    - name: session-beta
+      port: 10001
+      targetPort: session-beta

@@ -13,6 +13,12 @@
 resources:
   - ../private-cluster
   - ../gost-router
+  - gost-sessions-service.yaml
+patches:
+  - path: gost-sessions-patch.yaml
+    target:
+      kind: Deployment
+      name: gost-router
 images:
   - name: ghcr.io/crawlora-org/freeproxyapi
     newName: ghcr.io/crawlora-org/freeproxyapi
