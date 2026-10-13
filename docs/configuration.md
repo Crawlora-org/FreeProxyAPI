@@ -51,6 +51,7 @@ example binds the admin listener to the container's loopback; bind
 | `source_max_bytes` | 1 MiB | up to 32 MiB | Largest feed body that is read. |
 | `max_records_per_source` | `250000` | 1–5,000,000 | Most endpoints one feed can add per refresh; the rest are ignored. |
 | `max_candidates` | `0` (off) | ≥ 0 | When positive, stops new candidates being added once the set reaches this size. |
+| `source_learning_enabled` | `false` | | Opt in to per-feed ranking from sampled refresh and probe outcomes. Supports at most 4,096 configured feeds; see [Source learning](#source-learning). |
 
 HTTP feeds that return `ETag` or `Last-Modified` can be fetched conditionally.
 A `304 Not Modified` reuses the previously downloaded body and still parses
@@ -61,6 +62,29 @@ without caching. A restart starts with an empty cache, and failed or partially
 consumed bodies are never cached. Local `file://` feeds are always read anew.
 
 See [Securing Redis and bounding feed intake](deployment.md#securing-redis-and-bounding-feed-intake).
+
+### Source learning
+
+With `source_learning_enabled: true`, each exact feed URL and parser-scheme pair
+gets a stable 32-character source ID. A complete fetch, parse, and merge records
+its parsed and newly unique counts. Probe outcomes are sampled from the source
+that first added each endpoint while configured; duplicate feeds do not receive independent
+credit for the same candidate. Each candidate's first completed outcome and
+every 16th retest are sampled. Probe-derived, smoothed source scores use an
+eight-effective-sample minimum and a seven-day half-life. A change to the base
+probe URL, mode, or expected body starts fresh sampled quality evidence.
+Feeds under a 2%
+learned yield enter a 24-hour cooldown, with one-in-ten refreshes kept for
+exploration. Failed fetches use a separate capped retry cooldown. Learning
+changes source refresh order; it does not change proxy endpoint validation or
+the listing threshold.
+
+The setting is off by default and has no environment override. Quality hashes
+expire after 30 days, and only the active configured catalog is attributed.
+`/report` exposes `source_learning_local`; its `prepared` flag and generation
+distinguish an actual local refresh plan from an instance that has not planned
+a refresh. The local plan is not a cluster-wide source report. See
+[Redis schema](redis-schema.md#source-learning-and-quality-history).
 
 ## Validation
 
@@ -108,12 +132,25 @@ rest of this table controls how soon candidates are probed again.
 | `https_probe_target` | empty (off) | `https://` URL, no credentials | After roughly one in N successful probes, and only when the global budget grants one more permit, fetches this URL through the proxy's CONNECT (or SOCKS) tunnel with TLS verification and records `https_ok`. An `https://` proxy whose own TLS handshake fails is retried as a plain CONNECT proxy. |
 | `https_probe_expected_body` | empty | | Exact body the HTTPS probe must return. |
 | `https_probe_every` | `4` | 1–1000 | The N above. |
+| `target_profiles` | empty | up to 8 | Optional named HTTP content contracts owned by the operator. Each requires an HTTP(S) URL and a nonempty `expected_body` no longer than 64 KiB. There are no built-in or third-party profiles. |
+| `target_probe_every` | `16` | 1–1000 | Sample roughly one in every N successful main probes against one configured profile, rotating across the profile list. Each proxied check needs another global-budget permit. |
 | `control_probe_enabled` | `true` | | Each replica fetches `probe_target` directly to detect that the probe origin itself is failing. |
 | `control_probe_interval` | `60s` | at least `1s` | How often the control fetch runs. |
 | `control_probe_failure_threshold` | `3` | 1–100 | After this many consecutive control failures a replica's workers stop claiming work, and failed outcomes are released uncommitted, until one control check succeeds. |
 | `classification_max_age` | `24h` | | Age after which anonymity, exit, HTTPS, and tamper measurements are treated as unknown in `/proxies`. `/stats` and metrics still count stored values regardless of age. |
 | `geoip_db_path` | empty | | Optional MaxMind country database. |
-| `geoip_asn_db_path` | empty | | Optional MaxMind ASN database. |
+| `geoip_asn_db_path` | empty | | Optional MaxMind ASN database; can be used without a country database. |
+
+Each target profile has a unique lowercase `name` matching
+`[a-z][a-z0-9_-]{0,31}`, an operator-owned `url`, and an `expected_body` that
+the proxy must return exactly after trailing whitespace is removed. The monitor
+first checks the profile origin directly and caches that control result for
+`control_probe_interval`; an unavailable origin records
+an `unknown` observation instead of failing the proxy. Healthy-origin proxy
+checks are sampled from the global request budget. `target_profile=<name>` on
+`/proxies` requires a fresh passing result whose stored fingerprint still
+matches that profile's current URL and body. Removed or edited profiles no
+longer match prior results.
 
 ## Redis connections
 

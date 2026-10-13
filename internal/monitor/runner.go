@@ -45,6 +45,9 @@ const (
 )
 
 type Runner struct {
+	sourcePlan sourcePlanState
+	targets    targetProfileState
+
 	config Config
 	// store carries worker traffic: claims, completions, permits, refreshes,
 	// leases, and background stats.
@@ -162,6 +165,7 @@ func apiRedisPoolOptions(config Config) store.PoolOptions {
 }
 
 func NewRunner(config Config, worker string) (*Runner, error) {
+	config.sourceProbeContract = sourceProbeContract(config)
 	redisStore, err := store.NewRedisWithPool(config.RedisURL, config.Namespace, workerRedisPoolOptions(config))
 	if err != nil {
 		return nil, err
@@ -615,6 +619,15 @@ func (r *Runner) refresh(ctx context.Context) (err error) {
 		}
 		r.finishSourceLock(token, hold, err != nil && ctx.Err() != nil)
 	}()
+	selected, err := r.prepareSourceLearning(refreshCtx)
+	if err != nil {
+		r.recordRefreshError()
+		return err
+	}
+	if selected == 0 {
+		r.metrics.RecordSourceRefresh("skipped")
+		return nil
+	}
 	stageKey, err := r.store.NewSourceStageKey()
 	if err != nil {
 		r.recordRefreshError()
@@ -652,7 +665,15 @@ func (r *Runner) startSourceRefreshWorkers(ctx context.Context, stageKey string)
 		}()
 	}
 	go func() {
+		seen := map[string]bool{}
 		for _, spec := range r.config.SourceSpecs {
+			if r.config.SourceLearningEnabled {
+				id := r.sourceID(spec)
+				if _, selected := r.plannedSource(spec); !selected || seen[id] {
+					continue
+				}
+				seen[id] = true
+			}
 			jobs <- spec
 		}
 		close(jobs)
@@ -730,7 +751,7 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 			totalCapped += len(batch)
 			return nil
 		}
-		counts, err := r.store.UpsertPrioritizedCounts(ctx, batch, sourceQueueTime(queueBase, priority))
+		counts, err := r.enqueueSourceBatch(ctx, batch, priority, queueBase)
 		if err != nil {
 			return err
 		}
@@ -772,7 +793,8 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 func sourcePriority(spec SourceSpec) int64 {
 	raw := strings.ToLower(spec.URL)
 	switch {
-	case strings.Contains(raw, "iplocate/free-proxy-list"),
+	case strings.Contains(raw, "maximilianfeix.github.io/proxy-scraper/"),
+		strings.Contains(raw, "iplocate/free-proxy-list"),
 		strings.Contains(raw, "clearproxy/checked-proxy-list"),
 		strings.Contains(raw, "proxifly/free-proxy-list"),
 		strings.Contains(raw, "charlespikachu/freeproxy"),
@@ -891,11 +913,13 @@ func (r *Runner) refreshSource(ctx context.Context, spec SourceSpec, stageKey st
 			return result
 		}
 		if attempt == sourceFetchAttempts {
+			r.recordLearningFetchFailure(ctx, spec)
 			r.recordSourceFetchFailure(spec.URL, result.err)
 			return result
 		}
 		delay, retry := sourceFetchRetryDelay(result.err, rand.Float64())
 		if !retry {
+			r.recordLearningFetchFailure(ctx, spec)
 			r.recordSourceFetchFailure(spec.URL, result.err)
 			return result
 		}
@@ -963,8 +987,22 @@ func (r *Runner) refreshSourceAttempt(ctx context.Context, spec SourceSpec, stag
 	if err != nil {
 		return sourceRefreshResult{spec: spec, stage: sourceStageFetch, parsed: result.parsed, rejected: result.rejected, err: redactSourceError(err)}
 	}
-	if _, err := r.store.MergeSourceStage(ctx, sourceKey, stageKey, sourcePriority(spec)); err != nil {
-		return sourceRefreshResult{spec: spec, stage: sourceStageMerge, parsed: result.parsed, rejected: result.rejected, err: redactSourceError(err)}
+	priority := sourcePriority(spec)
+	if r.config.SourceLearningEnabled {
+		if feed, found := r.plannedSource(spec); found {
+			priority = feed.score
+		} else {
+			return sourceRefreshResult{spec: spec, stage: sourceStageMerge, err: fmt.Errorf("source missing from learning plan")}
+		}
+	}
+	_, introduced, mergeErr := r.store.MergeSourceStageCounts(ctx, sourceKey, stageKey, priority)
+	if mergeErr != nil {
+		return sourceRefreshResult{spec: spec, stage: sourceStageMerge, parsed: result.parsed, rejected: result.rejected, err: redactSourceError(mergeErr)}
+	}
+	if r.config.SourceLearningEnabled {
+		if err := r.store.RecordSourceRefreshSuccess(ctx, r.sourceID(spec), int64(result.parsed), introduced, r.nowFunc()); err != nil {
+			return sourceRefreshResult{spec: spec, stage: sourceStageMerge, err: err}
+		}
 	}
 	return result
 }
@@ -1047,6 +1085,7 @@ func (r *Runner) workerLoop(ctx context.Context, feed *claimFeed) {
 		}
 		r.metrics.RecordClaim()
 
+		startedProbeAt := time.Now()
 		result := r.runProbe(ctx, claim.URL)
 		r.metrics.AddProbeTraffic(result.UploadBytes, result.DownloadBytes)
 
@@ -1065,6 +1104,7 @@ func (r *Runner) workerLoop(ctx context.Context, feed *claimFeed) {
 		r.metrics.RecordProbeOutcome(claim.Retest, probe.ClassifyError(result), result.OK, result.Duration)
 		meta := r.probeOutcomeMeta(ctx, claim.URL, result)
 		r.sampleHTTPS(ctx, claim.URL, result, &meta)
+		r.sampleTargetProfileWithinLease(ctx, claim.URL, result, &meta, startedProbeAt)
 		if !r.commitProbeResult(ctx, claim, result, meta) {
 			return
 		}
@@ -1241,14 +1281,18 @@ func (r *Runner) runProbe(ctx context.Context, proxyURL string) probe.Result {
 // probeOutcomeMeta classifies a probed proxy's geography and anonymity,
 // running a separate anonymity check when the probe did not report one.
 func (r *Runner) probeOutcomeMeta(ctx context.Context, proxyURL string, result probe.Result) store.OutcomeMeta {
-	meta := store.OutcomeMeta{}
+	meta := store.OutcomeMeta{SourceLearning: r.config.SourceLearningEnabled}
+	if meta.SourceLearning {
+		meta.SourceLearningContract = r.sourceProbeContract()
+	}
 	if parsed, parseErr := url.Parse(proxyURL); parseErr == nil {
 		meta.Country, meta.ASN = r.geo.Lookup(parsed.Hostname())
 	}
 	if result.Anonymity.Class != "" {
 		meta.Anonymity = result.Anonymity.Class
 		meta.ExitIP = result.Anonymity.ExitIP
-		meta.ExitCountry, _ = r.geo.Lookup(result.Anonymity.ExitIP)
+		details := r.geo.LookupDetails(result.Anonymity.ExitIP)
+		meta.ExitCountry, meta.ExitASN, meta.ExitOrg, meta.Hosting = details.Country, details.ASN, details.Organization, details.Hosting
 	}
 	if result.Anonymity.TamperChecked {
 		r.recordEchoTamper(result.Anonymity, &meta)
@@ -1257,7 +1301,8 @@ func (r *Runner) probeOutcomeMeta(ctx context.Context, proxyURL string, result p
 		if anon.Class != "" {
 			meta.Anonymity = anon.Class
 			meta.ExitIP = anon.ExitIP
-			meta.ExitCountry, _ = r.geo.Lookup(anon.ExitIP)
+			details := r.geo.LookupDetails(anon.ExitIP)
+			meta.ExitCountry, meta.ExitASN, meta.ExitOrg, meta.Hosting = details.Country, details.ASN, details.Organization, details.Hosting
 		}
 		r.recordEchoTamper(anon, &meta)
 	}

@@ -20,27 +20,34 @@ import (
 )
 
 type SyncOptions struct {
-	APIURL           string
-	PublicAPI        bool
-	TokenFile        string
-	OutputFile       string
-	GOSTAPIURL       string
-	GOSTAPIAddress   string
-	GOSTAPIUsername  string
-	GOSTAPIPassword  string
-	ProxyUsername    string
-	ProxyPassword    string
-	CountryField     string
-	Countries        []string
-	RefreshInterval  time.Duration
-	RequestTimeout   time.Duration
-	MinimumRatioPct  int64
-	MaximumLatencyMs int64
-	Country          string
-	ExitCountry      string
-	ASN              string
-	Anonymity        string
-	GeoMismatch      bool
+	APIURL                  string
+	PublicAPI               bool
+	TokenFile               string
+	OutputFile              string
+	GOSTAPIURL              string
+	GOSTAPIAddress          string
+	GOSTAPIUsername         string
+	GOSTAPIPassword         string
+	ProxyUsername           string
+	ProxyPassword           string
+	CountryField            string
+	Countries               []string
+	RefreshInterval         time.Duration
+	RequestTimeout          time.Duration
+	MinimumRatioPct         int64
+	MaximumLatencyMs        int64
+	Country                 string
+	ExitCountry             string
+	ExitASN                 string
+	ASN                     string
+	Anonymity               string
+	TargetProfile           string
+	GeoMismatch             bool
+	ExcludeHosting          bool
+	StableExit              bool
+	MinSuccessStreak        int64
+	MinReliability7dPct     int64
+	MinReliability7dSamples int64
 	// ExcludeTampered sends exclude_tampered=true so proxies whose fresh echo
 	// tamper check failed are not routed.
 	ExcludeTampered bool
@@ -48,8 +55,12 @@ type SyncOptions struct {
 	// with a fresh, explicitly clean tamper verdict are routed.
 	RequireTamperChecked bool
 	// HTTPS sends https=true so only proxies with a fresh HTTPS check pass are routed.
-	HTTPS bool
-	Limit int
+	HTTPS           bool
+	Sessions        []string
+	SessionTTL      time.Duration
+	SessionBasePort int
+	SessionFailover bool
+	Limit           int
 }
 
 // apiResponse is one page of the FreeProxyAPI response. HasMore is only sent by
@@ -97,6 +108,12 @@ func (o SyncOptions) defaults() SyncOptions {
 	if o.Limit <= 0 {
 		o.Limit = 1000
 	}
+	if o.SessionTTL == 0 {
+		o.SessionTTL = 10 * time.Minute
+	}
+	if o.SessionBasePort == 0 {
+		o.SessionBasePort = 10000
+	}
 	return o
 }
 
@@ -107,11 +124,20 @@ const maxAPIResponseBytes = 8 << 20
 // the rendered config changed or the previous reload did not succeed.
 type syncer struct {
 	reloadPending bool
+	sessionPins   map[string]sessionPin
+	now           func() time.Time
 }
 
 // newSyncer starts with a pending reload: GOST may still be running a
 // bootstrap config even when the file on disk already matches.
 func newSyncer() *syncer { return &syncer{reloadPending: true} }
+
+func (s *syncer) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
 
 func Run(ctx context.Context, opts SyncOptions) error {
 	opts = opts.defaults()
@@ -170,41 +196,43 @@ func SyncOnce(ctx context.Context, client *http.Client, opts SyncOptions) error 
 
 func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions) error {
 	opts = opts.defaults()
+	if err := ValidateSessionOptions(opts.Sessions, opts.SessionTTL, opts.SessionBasePort, opts.Countries, opts.GOSTAPIAddress); err != nil {
+		return err
+	}
 	var tokenValue string
 	if !opts.PublicAPI {
 		token, err := os.ReadFile(opts.TokenFile)
 		if err != nil {
 			cause := fmt.Errorf("read API token: %w", err)
-			if opts.RequireTamperChecked {
-				return s.withdrawProxyPool(ctx, client, opts, cause)
-			}
-			return cause
+			return s.handleSyncFailure(ctx, client, opts, cause)
 		}
 		tokenValue = strings.TrimSpace(string(token))
 		if len(tokenValue) < 16 {
 			cause := fmt.Errorf("API token is shorter than 16 characters")
-			if opts.RequireTamperChecked {
-				return s.withdrawProxyPool(ctx, client, opts, cause)
-			}
-			return cause
+			return s.handleSyncFailure(ctx, client, opts, cause)
 		}
 	}
 
 	requestURL, err := url.Parse(opts.APIURL)
 	if err != nil {
 		cause := fmt.Errorf("parse API URL: %w", err)
-		if opts.RequireTamperChecked {
-			return s.withdrawProxyPool(ctx, client, opts, cause)
-		}
-		return cause
+		return s.handleSyncFailure(ctx, client, opts, cause)
 	}
 	query := requestURL.Query()
 	setOptionalQuery(query, "country", opts.Country)
 	setOptionalQuery(query, "exit_country", opts.ExitCountry)
+	setOptionalQuery(query, "exit_asn", opts.ExitASN)
 	setOptionalQuery(query, "asn", opts.ASN)
 	setOptionalQuery(query, "anonymity", opts.Anonymity)
+	setOptionalQuery(query, "target_profile", opts.TargetProfile)
 	if opts.GeoMismatch {
 		query.Set("geo_mismatch", "true")
+	}
+	if opts.ExcludeHosting {
+		query.Set("exclude_hosting", "true")
+	}
+	if opts.StableExit {
+		query.Set("stable_exit", "true")
 	}
 	if opts.ExcludeTampered {
 		query.Set("exclude_tampered", "true")
@@ -221,31 +249,49 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	if opts.MaximumLatencyMs > 0 {
 		query.Set("max_latency_ms", strconv.FormatInt(opts.MaximumLatencyMs, 10))
 	}
+	if opts.MinSuccessStreak > 0 {
+		query.Set("min_success_streak", strconv.FormatInt(opts.MinSuccessStreak, 10))
+	}
+	if opts.MinReliability7dPct > 0 {
+		query.Set("min_reliability_7d_pct", strconv.FormatInt(opts.MinReliability7dPct, 10))
+	}
+	if opts.MinReliability7dSamples > 0 {
+		query.Set("min_reliability_7d_samples", strconv.FormatInt(opts.MinReliability7dSamples, 10))
+	}
 	proxies, err := fetchProxies(ctx, client, opts, requestURL, query, tokenValue)
 	if err != nil {
-		if opts.RequireTamperChecked {
-			return s.withdrawProxyPool(ctx, client, opts, err)
-		}
-		return err
+		return s.handleSyncFailure(ctx, client, opts, err)
 	}
+	nowMs := time.Now().UnixMilli()
 	if opts.RequireTamperChecked {
-		proxies = filterStrictTamperResults(proxies, opts.HTTPS, time.Now().UnixMilli())
+		proxies = filterStrictTamperResults(proxies, opts.HTTPS, nowMs)
 	}
 	if opts.RequireTamperChecked && len(proxies) == 0 {
 		return s.withdrawProxyPool(ctx, client, opts, fmt.Errorf("strict tamper filter returned no proxies with a fresh clean verdict"))
 	}
+	if qualityFiltersRequested(opts) {
+		proxies = filterQualityResults(proxies, opts, nowMs)
+		if len(proxies) == 0 {
+			return s.withdrawProxyPool(ctx, client, opts, fmt.Errorf("quality filters returned no matching proxies with the required evidence"))
+		}
+	}
+	listeners := reconcileSessionListeners(s, opts, proxies, s.currentTime())
 	config, err := BuildConfig(proxies, BuildOptions{
-		CountryField:  opts.CountryField,
-		Countries:     opts.Countries,
-		ProxyUsername: opts.ProxyUsername,
-		ProxyPassword: opts.ProxyPassword,
-		APIUsername:   opts.GOSTAPIUsername,
-		APIPassword:   opts.GOSTAPIPassword,
-		APIAddress:    opts.GOSTAPIAddress,
+		CountryField:     opts.CountryField,
+		Countries:        opts.Countries,
+		ProxyUsername:    opts.ProxyUsername,
+		ProxyPassword:    opts.ProxyPassword,
+		APIUsername:      opts.GOSTAPIUsername,
+		APIPassword:      opts.GOSTAPIPassword,
+		APIAddress:       opts.GOSTAPIAddress,
+		SessionListeners: listeners,
 	})
 	if err != nil {
-		if opts.RequireTamperChecked {
+		if opts.RequireTamperChecked || qualityFiltersRequested(opts) {
 			return s.withdrawProxyPool(ctx, client, opts, err)
+		}
+		if sessionErr := s.dropSessionListeners(ctx, client, opts); sessionErr != nil {
+			return errors.Join(err, sessionErr)
 		}
 		return err
 	}
@@ -264,6 +310,68 @@ func (s *syncer) sync(ctx context.Context, client *http.Client, opts SyncOptions
 	}
 	s.reloadPending = false
 	return nil
+}
+
+func (s *syncer) handleSyncFailure(ctx context.Context, client *http.Client, opts SyncOptions, cause error) error {
+	if opts.RequireTamperChecked || qualityFiltersRequested(opts) {
+		return s.withdrawProxyPool(ctx, client, opts, cause)
+	}
+	if err := s.dropSessionListeners(ctx, client, opts); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
+}
+
+func qualityFiltersRequested(opts SyncOptions) bool {
+	return strings.TrimSpace(opts.ExitASN) != "" || opts.ExcludeHosting || opts.StableExit ||
+		opts.MinSuccessStreak > 0 || opts.MinReliability7dPct > 0 || opts.MinReliability7dSamples > 0 ||
+		strings.TrimSpace(opts.TargetProfile) != ""
+}
+
+func filterQualityResults(proxies []store.QueryProxy, opts SyncOptions, nowMs int64) []store.QueryProxy {
+	filtered := make([]store.QueryProxy, 0, len(proxies))
+	for _, proxy := range proxies {
+		if opts.ExitASN != "" && !sameASNumber(opts.ExitASN, proxy.ExitASN) {
+			continue
+		}
+		if opts.ExcludeHosting && proxy.Hosting != nil && *proxy.Hosting {
+			continue
+		}
+		if opts.StableExit && (proxy.StableExit == nil || !*proxy.StableExit || proxy.ExitCheckedAt <= 0 || proxy.ExitCheckedAt > nowMs) {
+			continue
+		}
+		if opts.MinSuccessStreak > 0 && (proxy.SuccessStreak == nil || *proxy.SuccessStreak < opts.MinSuccessStreak) {
+			continue
+		}
+		if opts.MinReliability7dSamples > 0 && proxy.Reliability7dSamples < opts.MinReliability7dSamples {
+			continue
+		}
+		if opts.MinReliability7dPct > 0 {
+			if proxy.Reliability7dPct == nil || *proxy.Reliability7dPct < opts.MinReliability7dPct || *proxy.Reliability7dPct > 100 {
+				continue
+			}
+		}
+		if opts.TargetProfile != "" {
+			profile, ok := proxy.TargetProfiles[opts.TargetProfile]
+			if !ok || profile.State != "pass" || profile.CheckedAt <= 0 || profile.CheckedAt > nowMs {
+				continue
+			}
+		}
+		filtered = append(filtered, proxy)
+	}
+	return filtered
+}
+
+func sameASNumber(left, right string) bool {
+	canonical := func(value string) (uint64, bool) {
+		value = strings.ToUpper(strings.TrimSpace(value))
+		value = strings.TrimPrefix(value, "AS")
+		number, err := strconv.ParseUint(value, 10, 32)
+		return number, err == nil && number > 0
+	}
+	a, aOK := canonical(left)
+	b, bOK := canonical(right)
+	return aOK && bOK && a == b
 }
 
 // filterStrictTamperResults provides a client-side safety check when a

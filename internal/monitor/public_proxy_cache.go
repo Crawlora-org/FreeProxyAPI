@@ -14,13 +14,13 @@ import (
 
 const (
 	publicProxyCacheEntries = 64
-	// publicProxyCacheBytes bounds the whole cache. Sixteen full-size entries
-	// fit, which keeps worst-case memory predictable (16 MiB).
+	// publicProxyCacheBytes bounds all cached response bodies at 16 MiB.
+	// Rich target-profile pages can use up to 4 MiB each.
 	publicProxyCacheBytes = 16 << 20
 	// publicProxyCacheEntrySize must admit a full /proxies page of
 	// publicProxyMaxLimit entries (roughly 200-400 bytes of JSON each), or the
 	// most expensive responses would never be cached.
-	publicProxyCacheEntrySize = 1 << 20
+	publicProxyCacheEntrySize = 4 << 20
 	publicProxyCacheTTL       = 30 * time.Second
 	// publicProxyLoadTimeout bounds a shared load. The load is detached from
 	// the cancellation of the request that started it so one disconnecting
@@ -182,6 +182,22 @@ func publicProxyCacheKey(filter store.ProxyFilter, offset int) [sha256.Size]byte
 	writeString(filter.ExitCountry)
 	writeString(filter.ASN)
 	writeString(filter.Anonymity)
+	writeString(filter.ExitASN)
+	writeString(filter.TargetProfile)
+	writeString(filter.TargetProfileFingerprint)
+	writeInt64(filter.MinSuccessStreak)
+	writeInt64(filter.MinReliability7dPct)
+	writeInt64(filter.MinReliability7dSamples)
+	if filter.ExcludeHosting {
+		_, _ = hash.Write([]byte{1})
+	} else {
+		_, _ = hash.Write([]byte{0})
+	}
+	if filter.StableExit {
+		_, _ = hash.Write([]byte{1})
+	} else {
+		_, _ = hash.Write([]byte{0})
+	}
 	if filter.GeoMismatch {
 		_, _ = hash.Write([]byte{1})
 	} else {

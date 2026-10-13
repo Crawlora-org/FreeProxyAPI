@@ -120,14 +120,15 @@ type validatedSlices struct {
 }
 
 type reportPayload struct {
-	Status            string          `json:"status"`
-	ValidationEnabled bool            `json:"network_validation_enabled"`
-	UptimeSeconds     int64           `json:"uptime_seconds"`
-	Counts            countsPayload   `json:"counts"`
-	Validated         validatedSlices `json:"validated_slices"`
-	BudgetPerMinute   int             `json:"probe_budget_per_minute"`
-	LastSourceRefresh refreshReport   `json:"last_source_refresh"`
-	CheckedAt         string          `json:"checked_at"`
+	SourceLearning    sourceLearningReport `json:"source_learning_local"`
+	Status            string               `json:"status"`
+	ValidationEnabled bool                 `json:"network_validation_enabled"`
+	UptimeSeconds     int64                `json:"uptime_seconds"`
+	Counts            countsPayload        `json:"counts"`
+	Validated         validatedSlices      `json:"validated_slices"`
+	BudgetPerMinute   int                  `json:"probe_budget_per_minute"`
+	LastSourceRefresh refreshReport        `json:"last_source_refresh"`
+	CheckedAt         string               `json:"checked_at"`
 }
 
 type statsPayload struct {
@@ -606,6 +607,7 @@ func (h *healthHandlers) report(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, reportPayload{
 		Status:            "ok",
 		ValidationEnabled: runner.config.NetworkValidationEnabled,
+		SourceLearning:    runner.sourceLearningSnapshot(),
 		UptimeSeconds:     int64(time.Now().UTC().Sub(runner.startedAt).Seconds()),
 		Counts: countsPayload{
 			Candidates: stats.Candidates,
@@ -701,11 +703,15 @@ func (h *healthHandlers) proxies(w http.ResponseWriter, r *http.Request) {
 	if requested > publicProxyDefaultLimit && h.runner.metrics != nil {
 		h.runner.metrics.RecordPublicLargePageRequest()
 	}
+	if err := h.runner.bindTargetProfile(&filter); err != nil {
+		writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	filter.ClassificationMaxAgeMs = h.runner.config.ClassificationMaxAge.Milliseconds()
 	cacheKey := publicProxyCacheKey(filter, offset)
 	ctx, cancel := context.WithTimeout(r.Context(), publicProxyRequestTimeout)
 	defer cancel()
-	body, remaining, cached, err := h.publicCache.getOrLoadWithStale(ctx, cacheKey, !filter.RequireTamperChecked, func(loadCtx context.Context) ([]byte, error) {
+	body, remaining, cached, err := h.publicCache.getOrLoadWithStale(ctx, cacheKey, !filter.RequireTamperChecked && !filter.StableExit && filter.TargetProfile == "", func(loadCtx context.Context) ([]byte, error) {
 		return h.loadProxiesBody(loadCtx, filter, offset)
 	})
 	if err != nil {
@@ -730,6 +736,7 @@ func (h *healthHandlers) loadProxiesBody(loadCtx context.Context, filter store.P
 	if err != nil {
 		return nil, err
 	}
+	h.runner.filterActiveTargetProfiles(proxies)
 	if len(proxies) > offset {
 		proxies = proxies[offset:]
 	} else {
@@ -860,11 +867,33 @@ func proxyFilter(r *http.Request) (store.ProxyFilter, error) {
 	if err != nil {
 		return store.ProxyFilter{}, err
 	}
+	exitASN, err := parseASNFilter(q.Get("exit_asn"))
+	if err != nil {
+		return store.ProxyFilter{}, err
+	}
+	streak, err := parseQualityInteger(q.Get("min_success_streak"), "min_success_streak", 1_000_000_000)
+	if err != nil {
+		return store.ProxyFilter{}, err
+	}
+	reliabilityPct, err := parseQualityInteger(q.Get("min_reliability_7d_pct"), "min_reliability_7d_pct", 100)
+	if err != nil {
+		return store.ProxyFilter{}, err
+	}
+	reliabilitySamples, err := parseQualityInteger(q.Get("min_reliability_7d_samples"), "min_reliability_7d_samples", 1_000_000_000)
+	if err != nil {
+		return store.ProxyFilter{}, err
+	}
+	targetProfile := strings.TrimSpace(q.Get("target_profile"))
+	if targetProfile != "" && !targetProfileNamePattern.MatchString(targetProfile) {
+		return store.ProxyFilter{}, fmt.Errorf("invalid target_profile name")
+	}
 	anonymity, err := parseAnonymityFilter(q.Get("anonymity"))
 	if err != nil {
 		return store.ProxyFilter{}, err
 	}
 	return store.ProxyFilter{
+		ExitASN: exitASN, ExcludeHosting: parseBool(q.Get("exclude_hosting")), StableExit: parseBool(q.Get("stable_exit")),
+		MinSuccessStreak: streak, MinReliability7dPct: reliabilityPct, MinReliability7dSamples: reliabilitySamples, TargetProfile: targetProfile,
 		Country:      country,
 		ExitCountry:  exitCountry,
 		ASN:          asn,
@@ -1142,6 +1171,10 @@ func registerInternalAPI(mux *http.ServeMux, runner *Runner, token string) {
 			writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if err := runner.bindTargetProfile(&filter); err != nil {
+			writeJSON(w, r, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		filter.ClassificationMaxAgeMs = runner.config.ClassificationMaxAge.Milliseconds()
 		ctx, cancel := context.WithTimeout(r.Context(), internalAPIQueryTimeout)
 		defer cancel()
@@ -1155,6 +1188,7 @@ func registerInternalAPI(mux *http.ServeMux, runner *Runner, token string) {
 		if proxies == nil {
 			proxies = []store.QueryProxy{}
 		}
+		runner.filterActiveTargetProfiles(proxies)
 		writeJSON(w, r, http.StatusOK, map[string]any{"count": len(proxies), "proxies": proxies})
 	})
 }

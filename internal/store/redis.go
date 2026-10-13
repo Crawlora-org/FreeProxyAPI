@@ -11,6 +11,7 @@ import (
 	mathrand "math/rand/v2"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -253,14 +254,15 @@ func (s *Redis) AddSourceMembers(ctx context.Context, key string, urls []string)
 // the shared stage grows.
 var mergeSourceStageScript = redis.NewScript(`
 local members = redis.call('SPOP', KEYS[1], ARGV[1])
+local introduced = 0
 for i = 1, #members do
-  redis.call('ZADD', KEYS[2], 'LT', ARGV[2], members[i])
+  introduced = introduced + redis.call('ZADD', KEYS[2], 'LT', ARGV[2], members[i])
 end
 if #members > 0 then
   redis.call('PEXPIRE', KEYS[1], ARGV[3])
   redis.call('PEXPIRE', KEYS[2], ARGV[3])
 end
-return #members
+return {#members, introduced}
 `)
 
 // MergeSourceStage drains a feed's private SET into the shared refresh stage
@@ -268,16 +270,27 @@ return #members
 // part-way leaves the shared stage partially merged; callers must then not
 // drain it.
 func (s *Redis) MergeSourceStage(ctx context.Context, sourceKey, stageKey string, priority int64) (int64, error) {
-	var moved int64
+	moved, _, err := s.MergeSourceStageCounts(ctx, sourceKey, stageKey, priority)
+	return moved, err
+}
+
+// MergeSourceStageCounts additionally counts newly introduced canonical URLs
+// atomically, so concurrent merges do not skew source duplicate measurements.
+func (s *Redis) MergeSourceStageCounts(ctx context.Context, sourceKey, stageKey string, priority int64) (int64, int64, error) {
+	var moved, introduced int64
 	for {
-		n, err := mergeSourceStageScript.Run(ctx, s.client, []string{sourceKey, stageKey},
-			sourceMergeBatch, priority, sourceStageTTL.Milliseconds()).Int64()
+		counts, err := mergeSourceStageScript.Run(ctx, s.client, []string{sourceKey, stageKey},
+			sourceMergeBatch, priority, sourceStageTTL.Milliseconds()).Int64Slice()
 		if err != nil {
-			return moved, err
+			return moved, introduced, err
 		}
-		moved += n
-		if n < sourceMergeBatch {
-			return moved, nil
+		if len(counts) != 2 {
+			return moved, introduced, fmt.Errorf("unexpected source merge counts")
+		}
+		moved += counts[0]
+		introduced += counts[1]
+		if counts[0] < sourceMergeBatch {
+			return moved, introduced, nil
 		}
 	}
 }
@@ -384,7 +397,10 @@ var upsertScript = redis.NewScript(`
 local added = 0
 local skipped = 0
 local now_ms = tonumber(ARGV[1])
-for i = 2, #ARGV, 2 do
+local last_pair = #ARGV
+local source_id = nil
+if #ARGV % 2 == 0 then source_id = ARGV[#ARGV]; last_pair = #ARGV - 1 end
+for i = 2, last_pair, 2 do
   local id = ARGV[i]
   local key = KEYS[4] .. id
   local blocked = false
@@ -398,6 +414,14 @@ for i = 2, #ARGV, 2 do
   else
     added = added + redis.call('SADD', KEYS[1], id)
     redis.call('HSET', key, 'url', ARGV[i + 1])
+    if source_id then
+      local previous_source = redis.call('HGET', key, 'source_id')
+      if previous_source and KEYS[6] and redis.call('EXISTS', KEYS[6]) == 1 and redis.call('SISMEMBER', KEYS[6], previous_source) == 0 then
+        redis.call('HSET', key, 'source_id', source_id)
+      else
+        redis.call('HSETNX', key, 'source_id', source_id)
+      end
+    end
 
     local leased = redis.call('ZSCORE', KEYS[3], id)
     local token = redis.call('HGET', key, 'lease_token') or ''
@@ -430,6 +454,10 @@ func (s *Redis) Upsert(ctx context.Context, urls []string, now time.Time) (int, 
 // UpsertCounts is Upsert that also reports how many endpoints were skipped
 // by an active eviction tombstone.
 func (s *Redis) UpsertCounts(ctx context.Context, urls []string, now time.Time) (UpsertCounts, error) {
+	return s.upsertCounts(ctx, urls, now, "")
+}
+
+func (s *Redis) upsertCounts(ctx context.Context, urls []string, now time.Time, sourceID string) (UpsertCounts, error) {
 	var counts UpsertCounts
 	for start := 0; start < len(urls); start += upsertBatch {
 		end := start + upsertBatch
@@ -442,8 +470,11 @@ func (s *Redis) UpsertCounts(ctx context.Context, urls []string, now time.Time) 
 			id := proxyID(rawURL)
 			args = append(args, id, rawURL)
 		}
+		if sourceID != "" {
+			args = append(args, sourceID)
+		}
 		values, err := upsertScript.Run(ctx, s.client,
-			[]string{s.candidatesKey(), s.pendingKey(), s.leasedKey(), s.prefix + ":proxy:", s.tombstonePrefix()}, args...).Int64Slice()
+			[]string{s.candidatesKey(), s.pendingKey(), s.leasedKey(), s.prefix + ":proxy:", s.tombstonePrefix(), s.SourceQualityKeyPrefix() + "active"}, args...).Int64Slice()
 		if err != nil {
 			return UpsertCounts{}, err
 		}
@@ -491,7 +522,20 @@ func (s *Redis) UpsertPrioritized(ctx context.Context, urls []string, now time.T
 // UpsertPrioritizedCounts is UpsertPrioritized that also reports endpoints
 // skipped by an active eviction tombstone.
 func (s *Redis) UpsertPrioritizedCounts(ctx context.Context, urls []string, now time.Time) (UpsertCounts, error) {
-	counts, err := s.UpsertCounts(ctx, urls, now)
+	return s.upsertPrioritizedSourceCounts(ctx, urls, now, "")
+}
+
+// UpsertPrioritizedSourceCounts attaches first provenance atomically before a
+// validation worker can claim a newly queued candidate.
+func (s *Redis) UpsertPrioritizedSourceCounts(ctx context.Context, urls []string, now time.Time, sourceID string) (UpsertCounts, error) {
+	if !validSourceID(sourceID) {
+		return UpsertCounts{}, fmt.Errorf("invalid source ID")
+	}
+	return s.upsertPrioritizedSourceCounts(ctx, urls, now, sourceID)
+}
+
+func (s *Redis) upsertPrioritizedSourceCounts(ctx context.Context, urls []string, now time.Time, sourceID string) (UpsertCounts, error) {
+	counts, err := s.upsertCounts(ctx, urls, now, sourceID)
 	if err != nil {
 		return UpsertCounts{}, err
 	}
@@ -682,7 +726,7 @@ local status = ARGV[2]
 local now_ms = ARGV[3]
 local id = ARGV[7]
 redis.call('ZREM', KEYS[2], id)
-
+` + SourceProbeLearningLuaSnippet + `
 -- Burst/initial-sweep mode intentionally drops failed candidates after the
 -- lease is verified. Do this before recording failure detail or history so a
 -- large unsuccessful pass does not grow the Redis hash or AOF unnecessarily.
@@ -764,15 +808,93 @@ else
   redis.call('ZADD', KEYS[3], failed_due, id)
 end
 
+-- Success streaks count consecutive completed probes independently of the
+-- rolling results10 listing threshold.
+if status == 'ok' then
+  redis.call('HINCRBY', key, 'success_streak', 1)
+else
+  redis.call('HSET', key, 'success_streak', '0')
+end
+-- Sparse reliability buckets use hour:sample_count:success_count entries.
+-- The first successful sample starts history; later missing hours add no
+-- synthetic failures. Pruning keeps no more than 168 UTC-hour buckets. Counts
+-- saturate at 999,999,999 per hour so the serialized field has a hard size cap.
+local history_started = redis.call('HGET', key, 'reliability_started_at_ms')
+if history_started or status == 'ok' then
+  if not history_started then
+    history_started = now_ms
+    redis.call('HSET', key, 'reliability_started_at_ms', now_ms)
+  end
+  local hour = math.floor(tonumber(now_ms) / 3600000)
+  local buckets = {}
+  local encoded = redis.call('HGET', key, 'reliability_buckets') or ''
+  for item in string.gmatch(encoded, '[^,]+') do
+    local h, count, successes = string.match(item, '^(%-?%d+):(%d+):(%d+)$')
+    h, count, successes = tonumber(h), tonumber(count), tonumber(successes)
+    if h and count and successes and hour - h >= 0 and hour - h < 168 then
+      buckets[h] = {count, successes}
+    end
+  end
+  local current = buckets[hour] or {0, 0}
+  if current[1] < 999999999 then
+    current[1] = current[1] + 1
+    if status == 'ok' then current[2] = current[2] + 1 end
+  end
+  buckets[hour] = current
+  local hours = {}
+  for h in pairs(buckets) do table.insert(hours, h) end
+  table.sort(hours)
+  local parts = {}
+  for _, h in ipairs(hours) do
+    local bucket = buckets[h]
+    table.insert(parts, tostring(h) .. ':' .. tostring(bucket[1]) .. ':' .. tostring(bucket[2]))
+  end
+  redis.call('HSET', key, 'reliability_buckets', table.concat(parts, ','))
+end
+
 if ARGV[11] ~= '' then redis.call('HSET', key, 'country', ARGV[11]) end
 if ARGV[12] ~= '' then redis.call('HSET', key, 'asn', ARGV[12]) end
 -- Anonymity/exit fields are measured together; any write refreshes
 -- anonymity_checked_at_ms so readers can age out stale classifications.
 local classified = false
 if ARGV[13] ~= '' then redis.call('HSET', key, 'anonymity', ARGV[13]); classified = true end
-if ARGV[14] ~= '' then redis.call('HSET', key, 'exit_ip', ARGV[14]); classified = true end
+if ARGV[14] ~= '' then classified = true end
 if ARGV[15] ~= '' then redis.call('HSET', key, 'exit_country', ARGV[15]); classified = true end
 if classified then redis.call('HSET', key, 'anonymity_checked_at_ms', now_ms) end
+-- Exit metadata is refreshed only with an actually observed exit IP. A first
+-- observation does not count as a change. Missing enrichment values clear
+-- prior per-IP data instead of incorrectly carrying it to a new address.
+-- ARGV[25..27] are exit ASN, organization, and hosting ("1"/"0"/empty).
+if ARGV[14] ~= '' then
+  local old_exit = redis.call('HGET', key, 'exit_ip') or ''
+  if (old_exit == '' or old_exit ~= ARGV[14]) and ARGV[15] == '' then
+    redis.call('HDEL', key, 'exit_country')
+  end
+  local exit_count = tonumber(redis.call('HGET', key, 'exit_ip_samples') or '0')
+  redis.call('HINCRBY', key, 'exit_ip_samples', 1)
+  if exit_count > 0 and old_exit ~= '' and old_exit ~= ARGV[14] then
+    redis.call('HINCRBY', key, 'exit_ip_changes', 1)
+    local changed_at = tonumber(redis.call('HGET', key, 'exit_ip_changed_at_ms') or '0')
+    if tonumber(now_ms) > changed_at then changed_at = tonumber(now_ms) end
+    redis.call('HSET', key, 'exit_ip_changed_at_ms', changed_at)
+  elseif exit_count == 0 then
+    redis.call('HSET', key, 'exit_ip_changes', '0')
+  end
+  local last_sample = tonumber(redis.call('HGET', key, 'exit_ip_last_sample_at_ms') or '0')
+  local previous_sample = tonumber(redis.call('HGET', key, 'exit_ip_prev_sample_at_ms') or '0')
+  local sample_at = tonumber(now_ms)
+  if sample_at >= last_sample then
+    previous_sample = last_sample
+    last_sample = sample_at
+  elseif sample_at > previous_sample then
+    previous_sample = sample_at
+  end
+  redis.call('HSET', key,
+    'exit_ip', ARGV[14], 'exit_checked_at_ms', now_ms,
+    'exit_ip_last_sample_at_ms', last_sample,
+    'exit_ip_prev_sample_at_ms', previous_sample,
+    'exit_asn', ARGV[25], 'exit_org', ARGV[26], 'exit_hosting', ARGV[27])
+end
 -- ARGV[20] https_ok ('1'/'0', '' = unchanged), ARGV[21] https_checked_at_ms,
 -- ARGV[22] https_tunnel_scheme ('' = unchanged).
 if ARGV[20] ~= nil and ARGV[20] ~= '' then
@@ -783,6 +905,7 @@ if ARGV[22] ~= nil and ARGV[22] ~= '' then redis.call('HSET', key, 'https_tunnel
 if ARGV[23] ~= nil and ARGV[23] ~= '' then
   redis.call('HSET', key, 'tampered', ARGV[23], 'tamper_checked_at_ms', ARGV[24])
 end
+` + targetProfileCompleteLua + `
 return 1
 `)
 
@@ -896,11 +1019,20 @@ return {strikes, backoff}
 // OutcomeMeta carries enrichment annotations recorded alongside a probe
 // outcome. Empty values never overwrite previously stored ones.
 type OutcomeMeta struct {
+	SourceLearning         bool
+	SourceLearningContract string
+	TargetProfiles         *TargetProfileUpdate
+
 	Country     string
 	ASN         string
 	Anonymity   string // elite | anonymous | transparent
 	ExitIP      string
 	ExitCountry string // GeoIP country of the observed exit IP
+	ExitASN     string
+	ExitOrg     string
+	// Hosting is true only when the ASN organization matches a known hosting
+	// term. Nil means the heuristic had no supported conclusion.
+	Hosting *bool
 
 	// HTTPSChecked records a sampled HTTPS-capability check (https_ok and
 	// https_checked_at_ms); when false the stored HTTPS fields are unchanged.
@@ -952,8 +1084,9 @@ func (s *Redis) Complete(ctx context.Context, claim Claim, now time.Time, policy
 	}
 	httpsOK, httpsCheckedAt := meta.httpsArgs(now)
 	tampered, tamperCheckedAt := meta.tamperArgs(now)
+	exitASN, exitOrg, exitHosting := meta.exitArgs()
 	result, err := completeScript.Run(ctx, s.client,
-		[]string{s.proxyKey(claim.ID), s.leasedKey(), s.pendingKey(), s.validatedKey(), s.candidatesKey()},
+		[]string{s.proxyKey(claim.ID), s.leasedKey(), s.pendingKey(), s.validatedKey(), s.candidatesKey(), s.SourceQualityKeyPrefix()},
 		claim.Token, status, now.UnixMilli(), statusCode, latency.Milliseconds(), detail,
 		claim.ID, validatedDue,
 		policy.MaxConsecutiveFailures, failedDue,
@@ -961,7 +1094,9 @@ func (s *Redis) Complete(ctx context.Context, claim Claim, now time.Time, policy
 		boolArg(policy.DiscardFailedCandidates),
 		listedFailureDue, policy.minSamples(), sampleDue,
 		httpsOK, httpsCheckedAt, meta.HTTPSTunnelScheme,
-		tampered, tamperCheckedAt).Int()
+		tampered, tamperCheckedAt,
+		exitASN, exitOrg, exitHosting,
+		boolArg(meta.SourceLearning), 16, (7 * 24 * time.Hour).Milliseconds(), encodeTargetProfileUpdate(meta.TargetProfiles), meta.SourceLearningContract).Int()
 	if err != nil {
 		return CompleteResult{}, err
 	}
@@ -977,6 +1112,17 @@ func (s *Redis) Complete(ctx context.Context, claim Claim, now time.Time, policy
 		outcome.Strikes, outcome.BlockedFor = strikes, blocked
 	}
 	return outcome, nil
+}
+
+func (m OutcomeMeta) exitArgs() (asn, org, hosting string) {
+	if m.ExitIP == "" {
+		return "", "", ""
+	}
+	asn, org = m.ExitASN, m.ExitOrg
+	if m.Hosting != nil {
+		hosting = boolArg(*m.Hosting)
+	}
+	return asn, org, hosting
 }
 
 func (s *Redis) writeTombstone(ctx context.Context, id string, now time.Time, policy RetestPolicy) (int64, time.Duration, error) {
@@ -1869,8 +2015,12 @@ func toIface(ss []string) []interface{} {
 // country of the proxy's egress IP. Zero values match everything; Limit <= 0
 // returns all matches. A positive Limit optionally restricts the result count.
 type ProxyFilter struct {
+	TargetProfile            string
+	TargetProfileFingerprint string
+
 	Country      string
 	ExitCountry  string
+	ExitASN      string
 	ASN          string
 	Anonymity    string
 	GeoMismatch  bool // true -> only candidates whose exit country differs from their entry country
@@ -1890,6 +2040,15 @@ type ProxyFilter struct {
 	// tamper verdict within ClassificationMaxAgeMs. A zero max age removes the
 	// age limit but still requires a recorded verdict.
 	RequireTamperChecked bool
+	// ExcludeHosting omits candidates explicitly classified as hosting. Unknown
+	// hosting values remain eligible.
+	ExcludeHosting bool
+	// StableExit requires two actual exit-IP observations within seven days and
+	// no recorded exit-IP change in that window.
+	StableExit              bool
+	MinSuccessStreak        int64
+	MinReliability7dPct     int64
+	MinReliability7dSamples int64
 	// ClassificationMaxAgeMs > 0 treats anonymity/exit, HTTPS, and tamper
 	// measurements older than this many milliseconds (or never timestamped) as
 	// unknown: they are blanked in results and never match anonymity,
@@ -1903,19 +2062,37 @@ type ProxyFilter struct {
 // aggregate surfaces this DOES include the credential-free endpoint URL: it is
 // served only by the authenticated internal API, never by /report or /metrics.
 type QueryProxy struct {
-	URL           string `json:"url"`
-	Scheme        string `json:"scheme"`
-	Country       string `json:"country"`
-	ExitCountry   string `json:"exit_country,omitempty"`
-	GeoMismatch   bool   `json:"geo_mismatch"`
-	ASN           string `json:"asn"`
-	Anonymity     string `json:"anonymity"`
-	LatencyMs     int64  `json:"latency_ms"`
-	JitterMs      int64  `json:"jitter_ms"`
-	OkRatioPct    int64  `json:"ok_ratio_pct"`
-	LastCheckedAt int64  `json:"last_checked_at_ms"`
-	LastStatus    string `json:"last_status"`
-	LastOkAt      int64  `json:"last_ok_at_ms"`
+	TargetProfiles map[string]TargetProfileResult `json:"target_profiles,omitempty"`
+
+	URL                        string `json:"url"`
+	Scheme                     string `json:"scheme"`
+	Country                    string `json:"country"`
+	ExitCountry                string `json:"exit_country,omitempty"`
+	ExitIP                     string `json:"exit_ip,omitempty"`
+	ExitCheckedAt              int64  `json:"exit_checked_at_ms,omitempty"`
+	StableExit                 *bool  `json:"stable_exit,omitempty"`
+	ExitASN                    string `json:"exit_asn,omitempty"`
+	ExitOrg                    string `json:"exit_org,omitempty"`
+	Hosting                    *bool  `json:"hosting,omitempty"`
+	ExitIPChanges              *int64 `json:"exit_ip_changes,omitempty"`
+	ExitIPChangedAt            int64  `json:"exit_ip_changed_at_ms,omitempty"`
+	ExitIPSamples              *int64 `json:"exit_ip_samples,omitempty"`
+	GeoMismatch                bool   `json:"geo_mismatch"`
+	ASN                        string `json:"asn"`
+	Anonymity                  string `json:"anonymity"`
+	LatencyMs                  int64  `json:"latency_ms"`
+	JitterMs                   int64  `json:"jitter_ms"`
+	OkRatioPct                 int64  `json:"ok_ratio_pct"`
+	LastCheckedAt              int64  `json:"last_checked_at_ms"`
+	LastStatus                 string `json:"last_status"`
+	LastOkAt                   int64  `json:"last_ok_at_ms"`
+	SuccessStreak              *int64 `json:"success_streak,omitempty"`
+	Reliability24hSamples      int64  `json:"reliability_24h_samples"`
+	Reliability24hPct          *int64 `json:"reliability_24h_pct,omitempty"`
+	Reliability7dSamples       int64  `json:"reliability_7d_samples"`
+	Reliability7dPct           *int64 `json:"reliability_7d_pct,omitempty"`
+	ReliabilityFirstSampleAt   int64  `json:"reliability_first_sample_at_ms,omitempty"`
+	ReliabilityCoverageStartAt int64  `json:"reliability_coverage_start_at_ms,omitempty"`
 	// AnonymityCheckedAt is when anonymity/exit fields were last measured.
 	AnonymityCheckedAt int64 `json:"anonymity_checked_at_ms,omitempty"`
 	// HTTPSOK is the latest fresh sampled HTTPS-capability result; nil when
@@ -2016,16 +2193,76 @@ func (s *Redis) QueryValidated(ctx context.Context, f ProxyFilter) ([]QueryProxy
 func hasProxyFilter(f ProxyFilter) bool {
 	return f.Country != "" || f.ExitCountry != "" || f.ASN != "" || f.Anonymity != "" ||
 		f.GeoMismatch || f.MaxLatencyMs > 0 || f.MinRatioPct > 0 || f.MaxAgeMs > 0 || f.HTTPS ||
-		f.ExcludeTampered || f.RequireTamperChecked
+		f.ExcludeTampered || f.RequireTamperChecked || f.ExitASN != "" || f.ExcludeHosting || f.StableExit ||
+		f.MinSuccessStreak > 0 || f.MinReliability7dPct > 0 || f.MinReliability7dSamples > 0 || f.TargetProfile != ""
 }
 
 // freshAt reports whether a measurement timestamp is usable under a
-// classification max age (zero maxAgeMs trusts any value).
+// classification max age (zero maxAgeMs trusts any non-future value).
 func freshAt(checkedAtMs, nowMs, maxAgeMs int64) bool {
 	if maxAgeMs <= 0 {
-		return true
+		return checkedAtMs <= 0 || checkedAtMs <= nowMs
 	}
-	return checkedAtMs > 0 && nowMs-checkedAtMs <= maxAgeMs
+	return checkedAtMs > 0 && checkedAtMs <= nowMs && nowMs-checkedAtMs <= maxAgeMs
+}
+
+type reliabilitySummary struct {
+	samples24h int64
+	success24h int64
+	samples7d  int64
+	success7d  int64
+}
+
+// summarizeReliability reads the sparse UTC-hour history produced by Complete.
+// Values are actual completed probe observations; absent hours contribute no
+// failures. Hour alignment makes each rolling boundary accurate to one hour.
+func summarizeReliability(encoded string, nowMs int64) reliabilitySummary {
+	var summary reliabilitySummary
+	if nowMs <= 0 {
+		return summary
+	}
+	currentHour := nowMs / int64(time.Hour/time.Millisecond)
+	start24 := (nowMs - int64(24*time.Hour/time.Millisecond)) / int64(time.Hour/time.Millisecond)
+	start7d := (nowMs - int64(7*24*time.Hour/time.Millisecond)) / int64(time.Hour/time.Millisecond)
+	if len(encoded) > 168*64 {
+		return summary
+	}
+	for entries := 0; encoded != "" && entries < 168; entries++ {
+		item, rest, _ := strings.Cut(encoded, ",")
+		encoded = rest
+		hourText, counters, found := strings.Cut(item, ":")
+		if !found {
+			continue
+		}
+		countText, successText, found := strings.Cut(counters, ":")
+		if !found {
+			continue
+		}
+		hour, hourErr := strconv.ParseInt(hourText, 10, 64)
+		count, countErr := strconv.ParseInt(countText, 10, 64)
+		successes, successErr := strconv.ParseInt(successText, 10, 64)
+		if hourErr != nil || countErr != nil || successErr != nil || count <= 0 || count > 999999999 || successes < 0 || successes > count {
+			continue
+		}
+		if hour > currentHour || hour < start7d {
+			continue
+		}
+		summary.samples7d += count
+		summary.success7d += successes
+		if hour >= start24 {
+			summary.samples24h += count
+			summary.success24h += successes
+		}
+	}
+	return summary
+}
+
+func reliabilityPct(successes, samples int64) *int64 {
+	if samples <= 0 {
+		return nil
+	}
+	pct := (successes*100 + samples/2) / samples
+	return &pct
 }
 
 // queryValidatedIDs appends matching IDs to initial. A membership check after
@@ -2056,7 +2293,11 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 				"latency_ewma_ms", "jitter_ewma_ms", "ok_ratio_pct", "last_checked_at_ms",
 				"last_status", "last_ok_at_ms",
 				"anonymity_checked_at_ms", "https_ok", "https_checked_at_ms", "https_tunnel_scheme",
-				"tampered", "tamper_checked_at_ms"))
+				"tampered", "tamper_checked_at_ms",
+				"exit_ip", "exit_asn", "exit_org", "exit_hosting", "exit_checked_at_ms",
+				"exit_ip_changes", "exit_ip_changed_at_ms", "exit_ip_samples",
+				"exit_ip_last_sample_at_ms", "exit_ip_prev_sample_at_ms",
+				"success_streak", "reliability_started_at_ms", "reliability_buckets", "target_profiles"))
 			members = append(members, pipe.SIsMember(ctx, s.validatedKey(), id))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
@@ -2073,7 +2314,7 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 				}
 			}
 			values, err := cmd.Result()
-			if err != nil || len(values) != 17 {
+			if err != nil || len(values) != 31 {
 				continue
 			}
 			str := func(idx int) string { v, _ := values[idx].(string); return v }
@@ -2108,6 +2349,42 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 			if f.ExcludeTampered && tampered != nil && *tampered {
 				continue
 			}
+			exitCheckedAt := num(21)
+			exitFresh := exitCheckedAt > 0 && freshAt(exitCheckedAt, nowMs, f.ClassificationMaxAgeMs)
+			exitIP, exitASN, exitOrg := str(17), str(18), str(19)
+			if !exitFresh {
+				exitIP, exitASN, exitOrg = "", "", ""
+			}
+			var hosting *bool
+			if raw := str(20); raw != "" && exitFresh {
+				v := raw == "1"
+				hosting = &v
+			}
+			if f.ExitASN != "" && exitASN != f.ExitASN {
+				continue
+			}
+			if f.ExcludeHosting && hosting != nil && *hosting {
+				continue
+			}
+			changes, observedChangesAt, exitSamples := num(22), num(23), num(24)
+			changesAt := observedChangesAt
+			if changesAt > nowMs {
+				changesAt = 0
+			}
+			var exitChanges, measuredExitSamples *int64
+			if exitFresh && exitSamples > 0 {
+				exitChanges, measuredExitSamples = &changes, &exitSamples
+			}
+			var stableExit *bool
+			if exitFresh && exitIP != "" && exitSamples > 0 {
+				cutoff := nowMs - int64(7*24*time.Hour/time.Millisecond)
+				lastSample, previousSample := num(25), num(26)
+				stable := exitSamples >= 2 && lastSample >= cutoff && lastSample <= nowMs && previousSample >= cutoff && previousSample <= nowMs && observedChangesAt <= cutoff
+				stableExit = &stable
+			}
+			if f.StableExit && (stableExit == nil || !*stableExit) {
+				continue
+			}
 			entryCountry := str(1)
 			mismatch := entryCountry != "" && exitCountry != "" && entryCountry != exitCountry
 			if f.Country != "" && entryCountry != f.Country {
@@ -2137,6 +2414,37 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 			if f.MaxAgeMs > 0 && (lastOk <= 0 || lastOk < okCutoffMs) {
 				continue
 			}
+			successStreakValue := num(27)
+			var successStreak *int64
+			if str(27) != "" && num(8) <= nowMs {
+				successStreak = &successStreakValue
+			}
+			if f.MinSuccessStreak > 0 && (successStreak == nil || *successStreak < f.MinSuccessStreak) {
+				continue
+			}
+			reliability := summarizeReliability(str(29), nowMs)
+			if f.MinReliability7dSamples > 0 && reliability.samples7d < f.MinReliability7dSamples {
+				continue
+			}
+			reliability7dPct := reliabilityPct(reliability.success7d, reliability.samples7d)
+			if f.MinReliability7dPct > 0 && (reliability7dPct == nil || *reliability7dPct < f.MinReliability7dPct) {
+				continue
+			}
+			startedAt := num(28)
+			if startedAt <= 0 || startedAt > nowMs {
+				startedAt = 0
+			}
+			coverageStart := int64(0)
+			if startedAt > 0 {
+				coverageStart = max(startedAt, nowMs-int64(7*24*time.Hour/time.Millisecond))
+			}
+			profiles := FreshTargetProfiles(str(30), nowMs, f.ClassificationMaxAgeMs)
+			if f.TargetProfile != "" {
+				profile, found := profiles[f.TargetProfile]
+				if !found || profile.State != "pass" || (f.TargetProfileFingerprint != "" && profile.Fingerprint != f.TargetProfileFingerprint) {
+					continue
+				}
+			}
 			rawURL := str(0)
 			if rawURL == "" {
 				continue
@@ -2152,12 +2460,20 @@ func (s *Redis) queryValidatedIDs(ctx context.Context, ids []string, f ProxyFilt
 				scheme = parsed.Scheme
 			}
 			out = append(out, QueryProxy{
-				URL: rawURL, Scheme: scheme,
+				TargetProfiles: profiles,
+				URL:            rawURL, Scheme: scheme,
 				Country: entryCountry, ExitCountry: exitCountry, GeoMismatch: mismatch,
+				ExitIP: exitIP, ExitASN: exitASN, ExitOrg: exitOrg, Hosting: hosting,
+				ExitCheckedAt: exitCheckedAt, StableExit: stableExit,
+				ExitIPChanges: exitChanges, ExitIPChangedAt: changesAt, ExitIPSamples: measuredExitSamples,
 				ASN: str(3), Anonymity: anonymity,
 				LatencyMs: latency, JitterMs: num(6), OkRatioPct: ratio,
 				LastCheckedAt: num(8),
-				LastStatus:    str(9), LastOkAt: lastOk,
+				LastStatus:    str(9), LastOkAt: lastOk, SuccessStreak: successStreak,
+				Reliability24hSamples: reliability.samples24h,
+				Reliability24hPct:     reliabilityPct(reliability.success24h, reliability.samples24h),
+				Reliability7dSamples:  reliability.samples7d, Reliability7dPct: reliability7dPct,
+				ReliabilityFirstSampleAt: startedAt, ReliabilityCoverageStartAt: coverageStart,
 				AnonymityCheckedAt: anonymityCheckedAt,
 				HTTPSOK:            httpsOK, HTTPSCheckedAt: httpsCheckedAt,
 				HTTPSTunnelScheme: str(14),

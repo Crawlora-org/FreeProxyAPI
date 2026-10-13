@@ -16,10 +16,13 @@ import (
 // resolves to that record.
 
 func mmdbString(s string) []byte {
-	if len(s) >= 29 {
-		panic("mmdbString: extended sizes not supported")
+	if len(s) < 29 {
+		return append([]byte{0x40 | byte(len(s))}, s...)
 	}
-	return append([]byte{0x40 | byte(len(s))}, s...)
+	if len(s) >= 285 {
+		panic("mmdbString: fixture string too long")
+	}
+	return append([]byte{0x40 | 29, byte(len(s) - 29)}, s...)
 }
 
 func mmdbUint16(v uint16) []byte { return []byte{0xA2, byte(v >> 8), byte(v)} }
@@ -78,13 +81,17 @@ func countryDB(t *testing.T) string {
 	return writeFixture(t, "country.mmdb", buildMMDB("GeoLite2-Country", record))
 }
 
-func asnDB(t *testing.T, asn uint32) string {
-	record := mmdbMap(mmdbString("autonomous_system_number"), mmdbUint32(asn))
+func asnDB(t *testing.T, asn uint32, organizations ...string) string {
+	pairs := [][]byte{mmdbString("autonomous_system_number"), mmdbUint32(asn)}
+	if len(organizations) > 0 {
+		pairs = append(pairs, mmdbString("autonomous_system_organization"), mmdbString(organizations[0]))
+	}
+	record := mmdbMap(pairs...)
 	return writeFixture(t, "asn.mmdb", buildMMDB("GeoLite2-ASN", record))
 }
 
 func TestLookupWithCountryAndASNDatabases(t *testing.T) {
-	r, err := Open(countryDB(t), asnDB(t, 15169))
+	r, err := Open(countryDB(t), asnDB(t, 15169, "Google Cloud Platform"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -97,12 +104,28 @@ func TestLookupWithCountryAndASNDatabases(t *testing.T) {
 			t.Errorf("Lookup(%q) = %q/%q, want US/AS15169", host, country, asn)
 		}
 	}
+	details := r.LookupDetails("192.0.2.10")
+	if details.Country != "US" || details.ASN != "AS15169" || details.Organization != "Google Cloud Platform" || details.Hosting == nil || !*details.Hosting {
+		t.Fatalf("LookupDetails = %+v, want hosting annotation for Google", details)
+	}
 	// Hostnames, malformed input, and IPv6 against an IPv4-only database all
 	// degrade to empty annotations rather than errors.
 	for _, host := range []string{"proxy.example.net", "", "999.1.1.1", "192.0.2.10:8080", "2001:db8::1"} {
 		if country, asn := r.Lookup(host); country != "" || asn != "" {
 			t.Errorf("Lookup(%q) = %q/%q, want empty", host, country, asn)
 		}
+	}
+}
+
+func TestLookupDetailsLeavesUnknownHostingUnclassified(t *testing.T) {
+	r, err := Open(countryDB(t), asnDB(t, 64500, "Example Network Services"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	details := r.LookupDetails("203.0.113.1")
+	if details.Organization != "Example Network Services" || details.Hosting != nil {
+		t.Fatalf("LookupDetails = %+v, want unknown hosting", details)
 	}
 }
 
@@ -207,5 +230,22 @@ func TestItoa(t *testing.T) {
 		if got := itoa(v); got != want {
 			t.Errorf("itoa(%d) = %q, want %q", v, got, want)
 		}
+	}
+}
+
+func TestLookupDetailsASNOnlyDatabase(t *testing.T) {
+	record := mmdbMap(mmdbString("autonomous_system_number"), mmdbUint32(64500), mmdbString("autonomous_system_organization"), mmdbString("Synthetic Cloud"))
+	path := writeFixture(t, "asn-only.mmdb", buildMMDB("GeoLite2-ASN", record))
+	resolver, err := Open("", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resolver.Close()
+	details := resolver.LookupDetails("192.0.2.1")
+	if !resolver.Enabled() || details.Country != "" || details.ASN != "AS64500" || details.Organization != "Synthetic Cloud" || details.Hosting == nil || !*details.Hosting {
+		t.Fatalf("ASN-only enrichment = %+v", details)
+	}
+	if isKnownHostingOrganization("Colorado Telephone") || isKnownHostingOrganization("Lawson Telecom") {
+		t.Fatal("short hosting terms must not match unrelated words")
 	}
 }

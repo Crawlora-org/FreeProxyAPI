@@ -57,6 +57,11 @@ const (
 )
 
 type Config struct {
+	sourceProbeContract   string
+	SourceLearningEnabled bool
+	TargetProfiles        []TargetProfile
+	TargetProbeEvery      int
+
 	RedisURL                 string
 	Namespace                string
 	Sources                  []string
@@ -234,6 +239,10 @@ func parseSourceSpec(raw string) (SourceSpec, error) {
 }
 
 type fileConfig struct {
+	SourceLearningEnabled bool            `json:"source_learning_enabled"`
+	TargetProfiles        []TargetProfile `json:"target_profiles"`
+	TargetProbeEvery      int             `json:"target_probe_every"`
+
 	RedisURL                 string   `json:"redis_url"`
 	Namespace                string   `json:"namespace"`
 	Sources                  []string `json:"sources"`
@@ -302,6 +311,9 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse monitor config: %w", err)
 	}
 	config := Config{
+		SourceLearningEnabled:    file.SourceLearningEnabled,
+		TargetProfiles:           append([]TargetProfile(nil), file.TargetProfiles...),
+		TargetProbeEvery:         file.TargetProbeEvery,
 		RedisURL:                 strings.TrimSpace(file.RedisURL),
 		Namespace:                strings.TrimSpace(file.Namespace),
 		Sources:                  append([]string(nil), file.Sources...),
@@ -388,8 +400,20 @@ func LoadConfig(path string) (Config, error) {
 		}
 		config.TrustedProxyCIDRs = append(config.TrustedProxyCIDRs, prefix.Masked())
 	}
+	if err := validateTargetProfiles(config.TargetProfiles); err != nil {
+		return Config{}, err
+	}
+	if config.TargetProbeEvery == 0 {
+		config.TargetProbeEvery = defaultTargetProbeEvery
+	}
+	if config.TargetProbeEvery < 1 || config.TargetProbeEvery > 1000 {
+		return Config{}, fmt.Errorf("target_probe_every must be between 1 and 1000")
+	}
 	if len(config.Sources) == 0 {
 		return Config{}, fmt.Errorf("at least one source is required")
+	}
+	if config.SourceLearningEnabled && len(config.Sources) > 4096 {
+		return Config{}, fmt.Errorf("source_learning_enabled supports at most 4096 sources")
 	}
 	config.SourceSpecs = make([]SourceSpec, 0, len(config.Sources))
 	for _, raw := range config.Sources {

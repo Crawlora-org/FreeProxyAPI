@@ -12,8 +12,11 @@ Public, validated proxies. Results are cached for 30 seconds, rate limited to
 `Access-Control-Allow-Origin: *`.
 
 ```sh
-curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80&limit=2'
+curl 'http://localhost:8080/proxies?exit_asn=AS15169&stable_exit=1&min_reliability_7d_pct=90&min_reliability_7d_samples=20&limit=2'
 ```
+
+The example assumes a local monitor running a version with these optional
+filters. Hosted-service filter availability depends on its deployment.
 
 ### Parameters
 
@@ -21,9 +24,16 @@ curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80
 | --- | --- | --- |
 | `country` | two letters | Country of the proxy's own IP (entry country). Case-insensitive. |
 | `exit_country` | two letters | Country of the exit IP observed by the echo check. Unknown or stale values never match. |
+| `exit_asn` | `AS15169` or `15169` | ASN of the observed exit IP. Unknown or stale values never match. |
 | `asn` | `AS15169` or `15169` | Autonomous system of the proxy's IP. |
 | `anonymity` | `elite`, `anonymous`, `transparent` | Anonymity class from the echo check. Unknown or stale values never match. |
 | `geo_mismatch` | bool | Only proxies whose exit country differs from their entry country. |
+| `exclude_hosting` | bool | Drop exits explicitly tagged as hosting by the ASN-name heuristic. Unknown classifications stay included; an unrecognized name does not mean residential. |
+| `stable_exit` | bool | Require at least two actual exit-IP observations in the last seven days and no observed change in that period. Missing observations do not count as stable. |
+| `min_success_streak` | integer | Minimum consecutive successful probes. A failure resets the streak to zero. |
+| `min_reliability_7d_pct` | 0–100 | Minimum observed-success percentage over available samples in the last seven days. |
+| `min_reliability_7d_samples` | integer | Minimum number of actual probe samples in the last seven days. Use with the percentage filter to require a useful evidence base. |
+| `target_profile` | configured name | Require a fresh passing result for this operator-configured target profile. An unconfigured name returns `400`. |
 | `max_latency_ms` | integer | Maximum smoothed latency. Capped at 600000. |
 | `min_ratio_pct` | integer 0–100 | Minimum rolling success ratio. |
 | `https` | bool | Only proxies whose latest sampled HTTPS/CONNECT check passed within `classification_max_age`. |
@@ -35,8 +45,12 @@ curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80
 
 Booleans accept `1`, `true`, `yes`, or `on`. A malformed `country`,
 `exit_country`, `asn`, `anonymity`, `max_age`, or `offset` returns `400`.
-A non-numeric `max_latency_ms` or `min_ratio_pct` is ignored. Pages are
-best-effort because the validated pool changes between requests.
+Malformed `min_success_streak`, `min_reliability_7d_pct`, or
+`min_reliability_7d_samples` values return `400`; the percentage must be from
+0 to 100 and the integer thresholds from 0 to 1,000,000,000. A malformed or
+unconfigured `target_profile` returns `400`. A non-numeric `max_latency_ms` or
+`min_ratio_pct` is ignored. Pages are best-effort because the validated pool
+changes between requests.
 
 ### Paging
 
@@ -66,6 +80,14 @@ will be lowered to 100 once clients stop relying on large pages. Do not assume a
       "scheme": "http",
       "country": "US",
       "exit_country": "US",
+      "exit_ip": "198.51.100.4",
+      "exit_asn": "AS64496",
+      "exit_org": "Example Hosting",
+      "hosting": true,
+      "exit_checked_at_ms": 1790000000000,
+      "exit_ip_changes": 0,
+      "exit_ip_samples": 3,
+      "stable_exit": true,
       "geo_mismatch": false,
       "asn": "AS64496",
       "anonymity": "elite",
@@ -75,12 +97,27 @@ will be lowered to 100 once clients stop relying on large pages. Do not assume a
       "last_checked_at_ms": 1790000000000,
       "last_status": "ok",
       "last_ok_at_ms": 1790000000000,
+      "success_streak": 5,
+      "reliability_24h_samples": 12,
+      "reliability_24h_pct": 92,
+      "reliability_7d_samples": 24,
+      "reliability_7d_pct": 92,
+      "reliability_first_sample_at_ms": 1789500000000,
+      "reliability_coverage_start_at_ms": 1789395200000,
       "anonymity_checked_at_ms": 1790000000000,
       "https_ok": true,
       "https_checked_at_ms": 1790000000000,
       "https_tunnel_scheme": "http",
       "tampered": false,
-      "tamper_checked_at_ms": 1790000000000
+      "tamper_checked_at_ms": 1790000000000,
+      "target_profiles": {
+        "catalog": {
+          "state": "pass",
+          "checked_at_ms": 1790000000000,
+          "http_status": 204,
+          "latency_ms": 125
+        }
+      }
     }
   ]
 }
@@ -90,6 +127,28 @@ will be lowered to 100 once clients stop relying on large pages. Do not assume a
 
 - `anonymity`, `exit_country`, `https_*`, and `tampered` are omitted or empty
   when never measured or older than `classification_max_age` (default 24h).
+- `exit_ip`, `exit_asn`, `exit_org`, `hosting`, and `stable_exit` describe a
+  fresh observed exit measurement and are omitted when it is missing or older
+  than `classification_max_age`. `hosting: true` comes from recognized ASN
+  organization terms; unknown is omitted and is not evidence of a residential
+  exit. The first observed exit IP is not counted as a change. An absent later
+  observation does not establish stability.
+- Reliability fields count completed probe observations in sparse UTC-hour
+  buckets. History begins with the first successful sample; later successes
+  and failures count, while missing hours add no failures. The hour-aligned
+  window edges can differ from an exact rolling 24-hour or seven-day boundary
+  by less than one hour. `reliability_*_pct` and `success_streak` are omitted
+  when legacy records have no corresponding measurement; percentage fields are
+  also omitted when the sample count is zero. `reliability_coverage_start_at_ms`
+  is the later of the first successful sample and the seven-day window start;
+  it does not claim uninterrupted monitoring.
+- `stable_exit` is true only after at least two measured IP observations in the
+  last seven days with no observed IP change in that window. A lack of recent
+  observations is unknown, not stable.
+- `target_profiles` contains only active configured profile names whose URL
+  and expected-body fingerprint still matches. Results are `pass`, `fail`, or
+  `unknown`; stale and removed profiles are omitted. Profile checks are
+  opt-in operator configuration, with no built-in third-party targets.
 - `tampered: true` means the echo check found modified headers or a violated
   body contract. Separate tamper annotations do not affect listing; a combined
   echo body-contract failure counts as a failed reachability sample. Use
