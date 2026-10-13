@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -227,4 +228,98 @@ func TestSourceLearningIDUsesPerSourceParserHintInRunner(t *testing.T) {
 	if strings.TrimSpace(runner.sourceID(specHTTP)) == "" {
 		t.Fatal("source identity unexpectedly empty")
 	}
+}
+
+func TestPrepareSourceLearningContractResetDoesNotReuseOldProbeSuccessForAdmissionCooldown(t *testing.T) {
+	base := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	var spec SourceSpec
+	for i := 0; ; i++ {
+		candidate := SourceSpec{URL: fmt.Sprintf("https://feeds.example.test/contract-reset-%d", i), Scheme: "http"}
+		id := store.StableSourceID(candidate.URL, "http")
+		if !exploreThisRefresh(id, 1, 10) {
+			spec = candidate
+			break
+		}
+	}
+
+	for _, tc := range []struct {
+		name           string
+		storedContract func(current string) string
+		wantSelected   int
+		wantCooled     int
+	}{
+		{
+			name: "old contract success no longer protects",
+			storedContract: func(current string) string {
+				old := strings.Repeat("a", 64)
+				if old == current {
+					return strings.Repeat("b", 64)
+				}
+				return old
+			},
+			wantSelected: 0,
+			wantCooled:   1,
+		},
+		{
+			name:           "matching contract success still protects",
+			storedContract: func(current string) string { return current },
+			wantSelected:   1,
+			wantCooled:     0,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner, mini := newSourceLearningRunner(t, "learning-contract-cooldown:"+tc.name, []SourceSpec{spec}, true)
+			runner.config.SourceLearningZeroAdmissionCooldown = time.Hour
+			runner.config.SourceLearningZeroAdmissionRefreshes = 3
+			id := runner.sourceID(spec)
+			key := runner.store.SourceQualityKeyPrefix() + id
+			currentContract := runner.sourceProbeContract()
+			mini.HSet(key,
+				"probe_contract", tc.storedContract(currentContract),
+				"probe_seen", "1", "probe_samples", "1", "probe_passes", "1",
+				"probe_updated_ms", fmt.Sprint(base.UnixMilli()),
+				"probe_completions", "1", "probe_successful_completions", "1", "probe_duration_ms", "250",
+			)
+			for observation := 0; observation < 3; observation++ {
+				if err := runner.store.RecordSourceAdmissionRefresh(context.Background(), map[string]int64{id: 0}, base); err != nil {
+					t.Fatalf("record completed admission observation: %v", err)
+				}
+			}
+			before := sourceQualityHashSnapshot(t, mini, key)
+
+			selected, err := runner.prepareSourceLearning(context.Background())
+			if err != nil || selected != tc.wantSelected {
+				t.Fatalf("prepareSourceLearning selected=%d err=%v, want %d", selected, err, tc.wantSelected)
+			}
+			if report := runner.sourceLearningSnapshot(); report.AdmissionCooled != tc.wantCooled {
+				t.Fatalf("admission-cooled report=%+v, want %d", report, tc.wantCooled)
+			}
+			after := sourceQualityHashSnapshot(t, mini, key)
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("planning mutated stored quality hash: before=%v after=%v", before, after)
+			}
+
+			quality, err := runner.store.LoadSourceQuality(context.Background(), []string{id}, base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := quality[id]
+			if stored.ProbeCompletions != 1 || stored.ProbeSuccessfulCompletions != 1 || stored.ProbeDurationMS != 250 {
+				t.Fatalf("stored probe-cost fields changed: %+v", stored)
+			}
+		})
+	}
+}
+
+func sourceQualityHashSnapshot(t *testing.T, mini *miniredis.Miniredis, key string) map[string]string {
+	t.Helper()
+	fields, err := mini.HKeys(key)
+	if err != nil {
+		t.Fatalf("HKeys(%q): %v", key, err)
+	}
+	snapshot := make(map[string]string, len(fields))
+	for _, field := range fields {
+		snapshot[field] = mini.HGet(key, field)
+	}
+	return snapshot
 }
