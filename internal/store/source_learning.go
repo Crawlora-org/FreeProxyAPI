@@ -86,7 +86,7 @@ local cap = 9007199254740991
 for i = 1, #fields do
   local raw = redis.call('HGET', key, fields[i]) or '0'
   local current = tonumber(raw)
-  if not string.match(raw, '^%d+$') or not current or current < 0 or current ~= math.floor(current) or current + increments[i] > cap then
+  if not (raw == '0' or string.match(raw, '^[1-9]%d*$')) or not current or current < 0 or current ~= math.floor(current) or current + increments[i] > cap then
     return redis.error_reply('invalid source cost counter')
   end
 end
@@ -137,7 +137,7 @@ for i = 1, #KEYS do
   for j = 1, #fields do
     local raw = redis.call('HGET', KEYS[i], fields[j]) or '0'
     local current = tonumber(raw)
-    if not string.match(raw, '^%d+$') or not current or current < 0 or current ~= math.floor(current) or current + increments[j] > cap then
+    if not (raw == '0' or string.match(raw, '^[1-9]%d*$')) or not current or current < 0 or current ~= math.floor(current) or current + increments[j] > cap then
       return redis.error_reply('invalid source admission counter')
     end
   end
@@ -339,6 +339,10 @@ func decodeSourceQuality(values map[string]string, now time.Time) SourceQuality 
 		if !ok || raw == "" {
 			return 0
 		}
+		if raw != "0" && (strings.HasPrefix(raw, "0") || strings.HasPrefix(raw, "+")) {
+			q.Corrupt = true
+			return 0
+		}
 		v, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || v < 0 {
 			q.Corrupt = true
@@ -479,8 +483,8 @@ if source_id and string.len(source_id) == 32 and string.match(source_id, '^[0-9a
     local completion_count = tonumber(completion_raw)
     local successful_count = tonumber(successful_raw)
     local duration_total = tonumber(duration_raw)
-    local valid_cost = string.match(completion_raw, '^%d+$') and
-      string.match(successful_raw, '^%d+$') and string.match(duration_raw, '^%d+$') and
+    local valid_cost = (completion_raw == '0' or string.match(completion_raw, '^[1-9]%d*$')) and
+      (successful_raw == '0' or string.match(successful_raw, '^[1-9]%d*$')) and (duration_raw == '0' or string.match(duration_raw, '^[1-9]%d*$')) and
       completion_count and successful_count and duration_total and
       completion_count >= 0 and successful_count >= 0 and duration_total >= 0 and
       completion_count == math.floor(completion_count) and successful_count == math.floor(successful_count) and

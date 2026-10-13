@@ -412,7 +412,7 @@ if source_id then
     if current_raw == false then current_raw = '0' end
     local current = tonumber(current_raw)
     local max_batch = math.floor((last_pair - 1) / 2)
-    if current and string.match(current_raw, '^%d+$') and current >= 0 and
+    if current and (current_raw == '0' or string.match(current_raw, '^[1-9]%d*$')) and current >= 0 and
         current == math.floor(current) and current + max_batch <= 9007199254740991 then
       record_admission = true
     end

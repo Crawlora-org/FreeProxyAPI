@@ -61,6 +61,9 @@ func TestSourceAdmissionCooldownUsesStoredFullRefreshObservations(t *testing.T) 
 		t.Fatal(err)
 	}
 	quality, err = runner.store.LoadSourceQuality(ctx, []string{id}, now.Add(5*time.Minute))
+	if err != nil || quality[id].ZeroAdmissionStreak != 1 {
+		t.Fatalf("zero streak after reset = %+v, err=%v", quality[id], err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

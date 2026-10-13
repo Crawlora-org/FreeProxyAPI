@@ -68,11 +68,6 @@ type feedAuditOptions struct {
 	MaxRecords  int
 }
 
-type feedAuditFlags struct {
-	inputPath string
-	options   feedAuditOptions
-}
-
 func feedAuditCommand(args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("feed-audit", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

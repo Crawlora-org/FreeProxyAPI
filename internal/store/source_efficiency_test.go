@@ -458,3 +458,21 @@ func TestValidatedDetailsExposeOnlyRoutingEvidenceAndFailClosed(t *testing.T) {
 }
 
 func ptr[T any](value T) *T { return &value }
+
+func TestNonCanonicalLeadingZeroTelemetryIsRejectedBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	mini, s := newTestStore(t, "counter-canonical:v1")
+	now := time.Unix(1800000000, 0)
+	id := StableSourceID("https://feeds.example/canonical", "http")
+	mini.HSet(s.sourceQualityKey(id), "http_attempts", "7", "network_bytes", "01")
+	if err := s.RecordSourceFetchCost(ctx, id, 1, 2, 3, now); err == nil {
+		t.Fatal("leading-zero counter accepted")
+	}
+	if mini.HGet(s.sourceQualityKey(id), "http_attempts") != "7" {
+		t.Fatal("preflight partially updated telemetry")
+	}
+	quality, err := s.LoadSourceQuality(ctx, []string{id}, now)
+	if err != nil || !quality[id].Corrupt {
+		t.Fatal("noncanonical counter was not marked corrupt")
+	}
+}
