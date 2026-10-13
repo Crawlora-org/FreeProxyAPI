@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Crawlora-org/FreeProxyAPI/internal/endpoint"
 	"github.com/Crawlora-org/FreeProxyAPI/internal/store"
@@ -77,7 +78,8 @@ type gostNode struct {
 }
 
 type gostConnector struct {
-	Type string `json:"type"`
+	Type     string         `json:"type"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type gostDialer struct {
@@ -297,6 +299,15 @@ func buildNodes(proxies []store.QueryProxy, opts BuildOptions, onlyCountry strin
 // unsafe IPv4 are dropped. Ordinary hostnames are kept because feeds may
 // legitimately carry them; GOST resolves those itself.
 func buildNode(proxy store.QueryProxy, country string) (gostNode, string, error) {
+	return buildNodeAt(proxy, country, time.Now())
+}
+
+const verifiedTunnelMaxAge = 24 * time.Hour
+
+// buildNodeAt is split out so transport evidence can be evaluated against a
+// deterministic clock in tests. HTTPS metadata is advisory input from the API,
+// so only a fresh, positive observation can change the URL's parsed scheme.
+func buildNodeAt(proxy store.QueryProxy, country string, now time.Time) (gostNode, string, error) {
 	if !strings.Contains(proxy.URL, "://") {
 		return gostNode{}, "", fmt.Errorf("invalid proxy URL")
 	}
@@ -305,11 +316,18 @@ func buildNode(proxy store.QueryProxy, country string) (gostNode, string, error)
 		return gostNode{}, "", fmt.Errorf("invalid proxy URL: %w", err)
 	}
 	scheme := parsed.Scheme
+	if verified, ok := verifiedHTTPSTunnelScheme(proxy, scheme, now); ok {
+		scheme = verified
+	}
 	connector := ""
+	var connectorMetadata map[string]any
 	switch scheme {
 	case "http", "https":
 		connector = "http"
-	case "socks4", "socks4a":
+	case "socks4":
+		connector = "socks4"
+		connectorMetadata = map[string]any{"disable4a": true}
+	case "socks4a":
 		connector = "socks4"
 	case "socks5", "socks5h":
 		connector = "socks5"
@@ -324,9 +342,27 @@ func buildNode(proxy store.QueryProxy, country string) (gostNode, string, error)
 	return gostNode{
 		Name:      nodeName(country, scheme, addr),
 		Addr:      addr,
-		Connector: gostConnector{Type: connector},
+		Connector: gostConnector{Type: connector, Metadata: connectorMetadata},
 		Dialer:    dialer,
 	}, scheme + "://" + addr, nil
+}
+
+func verifiedHTTPSTunnelScheme(proxy store.QueryProxy, originalScheme string, now time.Time) (string, bool) {
+	if originalScheme != "http" && originalScheme != "https" {
+		return "", false
+	}
+	if proxy.HTTPSOK == nil || !*proxy.HTTPSOK || proxy.HTTPSCheckedAt <= 0 {
+		return "", false
+	}
+	nowMs := now.UnixMilli()
+	if proxy.HTTPSCheckedAt > nowMs || nowMs-proxy.HTTPSCheckedAt > verifiedTunnelMaxAge.Milliseconds() {
+		return "", false
+	}
+	verifiedScheme := strings.ToLower(strings.TrimSpace(proxy.HTTPSTunnelScheme))
+	if verifiedScheme != "http" && verifiedScheme != "https" {
+		return "", false
+	}
+	return verifiedScheme, true
 }
 
 func normalizeCountry(raw string) string {
