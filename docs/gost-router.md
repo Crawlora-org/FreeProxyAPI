@@ -435,6 +435,11 @@ in each router process rather than shared between replicas, so a Pod restart
 loses its pins. Enabling failover can assign a replacement before TTL expiry
 and starts a new pin lifetime. The separate Service remains cluster-internal.
 
+The live overlay requires a measured success streak of at least one and a
+fresh, explicitly clean tamper check for every router pool. This excludes
+legacy unknown streaks and proxies whose latest completed check failed.
+The general templates leave these additional requirements disabled.
+
 ### Expose two session ports with Compose
 
 The checked-in Compose files publish only the normal and country listeners.

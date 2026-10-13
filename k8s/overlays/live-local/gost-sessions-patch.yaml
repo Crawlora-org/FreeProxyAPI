@@ -9,6 +9,10 @@ spec:
       containers:
         - name: proxy-router
           env:
+            - name: FREEPROXYAPI_MIN_SUCCESS_STREAK
+              value: "1"
+            - name: FREEPROXYAPI_REQUIRE_TAMPER_CHECKED
+              value: "true"
             - name: GOST_SESSIONS
               value: "alpha,beta"
             - name: GOST_SESSION_TTL
