@@ -78,6 +78,9 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 				q.ProbePasses = 0
 				q.ProbeUpdatedAt = time.Time{}
 				q.ProbeSeen = 0
+				q.ProbeCompletions = 0
+				q.ProbeSuccessfulCompletions = 0
+				q.ProbeDurationMS = 0
 			}
 			quality[id] = q
 		}
