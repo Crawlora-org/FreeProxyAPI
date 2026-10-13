@@ -57,11 +57,18 @@ The public API filter variables are optional and can be combined:
 ```sh
 export FREEPROXYAPI_COUNTRY=US
 export FREEPROXYAPI_EXIT_COUNTRY=CA
+export FREEPROXYAPI_EXIT_ASN=AS64501
 export FREEPROXYAPI_ANONYMITY=elite
 export FREEPROXYAPI_ASN=AS64500
+export FREEPROXYAPI_TARGET_PROFILE=owned-origin
 export FREEPROXYAPI_MAX_LATENCY_MS=500
 export FREEPROXYAPI_MIN_RATIO_PCT=90
 export FREEPROXYAPI_GEO_MISMATCH=true
+export FREEPROXYAPI_EXCLUDE_HOSTING=true
+export FREEPROXYAPI_STABLE_EXIT=true
+export FREEPROXYAPI_MIN_SUCCESS_STREAK=4
+export FREEPROXYAPI_MIN_RELIABILITY_7D_PCT=90
+export FREEPROXYAPI_MIN_RELIABILITY_7D_SAMPLES=20
 export FREEPROXYAPI_EXCLUDE_TAMPERED=true
 export FREEPROXYAPI_REQUIRE_TAMPER_CHECKED=true
 export FREEPROXYAPI_HTTPS=true
@@ -86,6 +93,26 @@ In strict mode, an empty pool or a failed API refresh writes and reloads an
 API-only GOST configuration, withdrawing proxy listeners until a matching
 pool returns. Write or reload failures are reported and retried; withdrawal
 takes effect only after GOST accepts the reload.
+
+Additional quality filters include `FREEPROXYAPI_EXIT_ASN`,
+`FREEPROXYAPI_EXCLUDE_HOSTING`, `FREEPROXYAPI_STABLE_EXIT`,
+`FREEPROXYAPI_MIN_SUCCESS_STREAK`, `FREEPROXYAPI_MIN_RELIABILITY_7D_PCT`, and
+`FREEPROXYAPI_MIN_RELIABILITY_7D_SAMPLES`. `exclude_hosting` removes only exits
+explicitly matched by the ASN-organization heuristic; an unknown value remains
+eligible and does not mean residential. `stable_exit` requires at least two
+actual matching exit-IP observations in seven days with no observed change in
+that window. Missing samples do not count as evidence of stability. The
+reliability percentage uses completed observations after a candidate's first
+successful sample; missing hours add no failures and hour-bucket boundaries
+can vary by less than one hour.
+
+`FREEPROXYAPI_TARGET_PROFILE` requests a named content profile configured by
+the API operator. The profile requires an operator-owned HTTP(S) endpoint and
+an expected response body. A public API that does not configure that profile
+will reject the query; the templates use an empty default. Profile checks are
+sampled and consume the proxy monitor's global request budget. See the [API
+reference](api.md) and [configuration reference](configuration.md) for the
+measured fields and profile setup.
 
 These filters select entries from FreeProxyAPI's listed pool.
 `GOST_COUNTRY_FIELD` controls which
@@ -369,6 +396,112 @@ flags when a password contains reserved URL characters. A country listener
 is created only when the current validated set contains at least one proxy for
 that country; the all-country listener still requires at least one validated
 proxy overall.
+
+## Named sticky sessions
+
+`GOST_SESSIONS` optionally creates one authenticated GOST listener for each
+named session. These are named ports shared by every client using them, not
+per-client or cookie-based sessions. Set a comma-separated list of up to 128
+unique IDs; each ID is 1–32 ASCII letters, digits, underscores, or hyphens,
+starting with a letter or digit. Ports use sorted ID order starting at
+`GOST_SESSION_BASE_PORT` (default 10000). `GOST_SESSION_TTL` defaults to 10
+minutes and `GOST_SESSION_FAILOVER` defaults to false. The Compose and
+Kubernetes templates leave `GOST_SESSIONS` empty, so no session listeners or
+port mappings are enabled by default.
+
+The base port must be at least 1024, and the assigned range must fit below
+65536 and avoid the unified/country listeners and GOST Web API port. For
+several sessions, leave enough free consecutive ports.
+
+Pins live in synchronizer memory and are lost on restart; deterministic
+selection may choose the same upstream again but does not guarantee it. If a
+pinned proxy disappears from the filtered pool or its latest status is failed,
+its session listener is withheld for that refresh. The pin remains held through
+TTL and the listener may resume if the same upstream becomes eligible again. A
+known changed exit IP also invalidates that pin. Unknown exit metadata does not
+establish IP continuity; use `FREEPROXYAPI_STABLE_EXIT=true` when you require
+the pool to have repeated recent exit observations. With
+`GOST_SESSION_FAILOVER=true`, the router may reassign an invalid pin from the
+current eligible pool before TTL expiry. A refresh API error removes the
+session listeners after GOST accepts
+the reload; a requested quality-filter failure may withdraw the
+whole proxy pool.
+
+### Expose two session ports with Compose
+
+The checked-in Compose files publish only the normal and country listeners.
+Create a local `compose.sessions.yaml` override to enable two sessions and bind
+their listeners to host loopback:
+
+```yaml
+services:
+  proxy-router:
+    environment:
+      GOST_SESSIONS: "alpha,beta"
+      GOST_SESSION_TTL: "10m"
+      GOST_SESSION_BASE_PORT: "10000"
+      GOST_SESSION_FAILOVER: "false"
+  gost:
+    ports:
+      - "127.0.0.1:10000:10000"
+      - "127.0.0.1:10001:10001"
+```
+
+Start it after either Compose base file, for example:
+
+```sh
+docker compose -f docker-compose.gost-public.yml -f compose.sessions.yaml up -d
+```
+
+The session listeners still require the configured GOST proxy credentials. Do
+not broaden the host binds unless the network and authentication controls are
+appropriate for your deployment.
+
+### Expose session ports with Kubernetes
+
+The checked-in `gost-router` Service does not publish these ports. In a local
+Kustomize patch, set the `proxy-router` environment values and add matching
+ports to the `gost` container and Service. For the `alpha,beta` example, add:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gost-router
+spec:
+  template:
+    spec:
+      containers:
+        - name: proxy-router
+          env:
+            - name: GOST_SESSIONS
+              value: "alpha,beta"
+            - name: GOST_SESSION_BASE_PORT
+              value: "10000"
+        - name: gost
+          ports:
+            - name: session-alpha
+              containerPort: 10000
+            - name: session-beta
+              containerPort: 10001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gost-router
+spec:
+  ports:
+    - name: session-alpha
+      port: 10000
+      targetPort: session-alpha
+    - name: session-beta
+      port: 10001
+      targetPort: session-beta
+```
+
+The Service stays `ClusterIP` in the example. Add external exposure only in
+your own overlay and protect it with the network policy and client
+authentication your deployment requires.
 
 ## Local GOST process
 

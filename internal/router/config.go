@@ -14,17 +14,18 @@ import (
 )
 
 type BuildOptions struct {
-	CountryField   string
-	Countries      []string
-	ProxyUsername  string
-	ProxyPassword  string
-	APIUsername    string
-	APIPassword    string
-	APIAddress     string
-	Selector       string
-	MaxFails       int
-	FailTimeout    string
-	RequestRetries int
+	CountryField     string
+	Countries        []string
+	ProxyUsername    string
+	ProxyPassword    string
+	APIUsername      string
+	APIPassword      string
+	APIAddress       string
+	Selector         string
+	MaxFails         int
+	FailTimeout      string
+	RequestRetries   int
+	SessionListeners []SessionListener
 }
 
 type gostConfig struct {
@@ -116,6 +117,9 @@ func BuildConfig(proxies []store.QueryProxy, opts BuildOptions) ([]byte, error) 
 	if len(proxies) == 0 {
 		return nil, fmt.Errorf("cannot render GOST config without validated proxies")
 	}
+	if err := validateSessionListeners(opts.SessionListeners, opts.Countries, opts.APIAddress); err != nil {
+		return nil, err
+	}
 
 	allNodes := buildNodes(proxies, opts, "")
 	if len(allNodes) == 0 {
@@ -132,6 +136,15 @@ func BuildConfig(proxies []store.QueryProxy, opts BuildOptions) ([]byte, error) 
 		services = append(services, makeService(country+"-http", 3129+index, chainName, opts))
 		chains = append(chains, makeChain(chainName, strings.ToLower(country)+"-pool", nodes, opts))
 	}
+	for _, session := range opts.SessionListeners {
+		nodes := buildNodes([]store.QueryProxy{session.Proxy}, opts, "")
+		if len(nodes) != 1 {
+			return nil, fmt.Errorf("session %q proxy cannot be represented by GOST", session.ID)
+		}
+		name := "session-" + session.ID
+		services = append(services, makeService(name, session.Port, name, opts))
+		chains = append(chains, makeChain(name, name+"-pool", nodes, opts))
+	}
 
 	config := gostConfig{
 		Services: services,
@@ -143,6 +156,43 @@ func BuildConfig(proxies []store.QueryProxy, opts BuildOptions) ([]byte, error) 
 		return nil, fmt.Errorf("marshal GOST config: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+func validateSessionListeners(sessions []SessionListener, countries []string, apiAddresses ...string) error {
+	if len(sessions) > maxNamedSessions {
+		return fmt.Errorf("at most %d named sessions are allowed", maxNamedSessions)
+	}
+	occupied := map[int]struct{}{3128: {}}
+	countryList := normalizeCountries(countries)
+	if len(countryList) == 0 {
+		countryList = []string{"US"}
+	}
+	for index := range countryList {
+		occupied[3129+index] = struct{}{}
+	}
+	if len(apiAddresses) > 0 {
+		if apiPort, ok := listenPort(apiAddresses[0]); ok {
+			occupied[apiPort] = struct{}{}
+		}
+	}
+	ids := make(map[string]struct{}, len(sessions))
+	for _, session := range sessions {
+		if !validSessionID(session.ID) {
+			return fmt.Errorf("invalid session ID %q", session.ID)
+		}
+		if _, ok := ids[session.ID]; ok {
+			return fmt.Errorf("duplicate session ID %q", session.ID)
+		}
+		ids[session.ID] = struct{}{}
+		if session.Port < 1024 || session.Port > 65535 {
+			return fmt.Errorf("session %q port must be from 1024 to 65535", session.ID)
+		}
+		if _, ok := occupied[session.Port]; ok {
+			return fmt.Errorf("session %q port %d collides with another listener", session.ID, session.Port)
+		}
+		occupied[session.Port] = struct{}{}
+	}
+	return nil
 }
 
 // BuildBootstrapConfig renders a config that only enables the authenticated

@@ -6,16 +6,19 @@
 FreeProxyAPI collects proxy endpoints that third parties have published in
 public lists, tests whether they currently work, and serves the validated
 results through a small HTTP API. Beyond "is it up", it measures latency,
-anonymity, exit country, HTTPS/CONNECT support, and whether a proxy tampers with
-traffic, so you can filter on what you actually need.
+anonymity, observed exit details, HTTPS/CONNECT support, echo tampering, and
+sampled success history, so you can filter on what you actually need.
 
 Hosted service (rate limited, best effort):
 [freeproxyapi.crawlora.net](https://freeproxyapi.crawlora.net/). You can also
 run your own instance; see [Quick start](#quick-start).
 
 ```sh
-curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80&https=1&limit=2'
+curl 'http://localhost:8080/proxies?exit_asn=AS15169&stable_exit=1&min_reliability_7d_pct=90&min_reliability_7d_samples=20&limit=2'
 ```
+
+New filters require a monitor running a version that supports them. Hosted
+service filter availability depends on its deployment.
 
 ```json
 {
@@ -29,6 +32,10 @@ curl 'https://freeproxyapi.crawlora.net/proxies?exit_country=US&min_ratio_pct=80
       "scheme": "http",
       "country": "US",
       "exit_country": "US",
+      "exit_asn": "AS64496",
+      "stable_exit": true,
+      "reliability_7d_samples": 24,
+      "reliability_7d_pct": 92,
       "anonymity": "elite",
       "latency_ms": 412,
       "ok_ratio_pct": 90,
@@ -73,9 +80,10 @@ Feeds are fetched on an interval and deduplicated into a Redis queue.
 A bounded in-memory cache uses HTTP validators to avoid downloading unchanged
 feeds; their cached bodies are still parsed and staged on every refresh. Replicas
 claim due candidates with leases, probe them within a shared request budget, and
-record latency, success ratio, anonymity, HTTPS, and tamper results. A proxy is
-listed only after several successful samples, and is re-checked soon after a
-failure.
+record latency, success ratio, anonymity, HTTPS, and tamper results. Optional
+operator target profiles check a small HTTP response contract, and opt-in source
+learning ranks feeds from sampled outcomes. A proxy is listed only after several
+successful samples, and is re-checked soon after a failure.
 
 | | Hosted service | Self-hosted |
 | --- | --- | --- |
@@ -142,7 +150,7 @@ every `/proxies` filter, the response schema, and error codes, is in
 
 | Endpoint | Description |
 | --- | --- |
-| `/proxies` | Public, validated proxies, filterable by country, exit country, ASN, latency, success ratio, anonymity, HTTPS, tamper status, and age. Paged, cached, and rate limited per client IP. |
+| `/proxies` | Public, validated proxies, filterable by country, exit country and ASN, exit stability, sampled reliability, target profile, latency, success ratio, anonymity, HTTPS, tamper status, and age. Paged, cached, and rate limited per client IP. |
 | `/stats` | Aggregate counts by country, anonymity, and latency band. Never returns proxy URLs. |
 | `/get` | httpbin-compatible caller-IP echo for operator-controlled checks. |
 | `/livez`, `/readyz` | Liveness and readiness (`503` when Redis is unavailable). |

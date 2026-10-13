@@ -541,11 +541,59 @@ Feeds are untrusted input, and each unique endpoint becomes a Redis hash:
 
 `internal_api_token_file` points at a mounted file whose contents are the
 bearer token for `/internal/api/v1/proxies`. Without it the endpoint does not
-exist. The API returns credential-free endpoint URLs filtered by endpoint
-country (`country`), observed exit country (`exit_country`), ASN, anonymity,
-latency ceiling, minimum success ratio, `max_age` freshness of the last
-successful probe, `https`, `exclude_tampered`, and limit — keep the Service
+exist. The API returns credential-free endpoint URLs filtered by endpoint and
+exit country/ASN, anonymity, hosting hint, stable exit, success streak,
+observed 24-hour/seven-day reliability, optional target profile, latency
+ceiling, minimum success ratio, `max_age` freshness of the last successful
+probe, `https`, `exclude_tampered`, and limit. Keep the Service
 ClusterIP/internal only; the public `/proxies` route is the public alternative.
+See the [API reference](api.md) for field freshness and evidence requirements.
+
+## Optional source learning and target profiles
+
+Source ranking is off by default. To enable it, set `source_learning_enabled`
+in the monitor config and keep the configured catalog within 4,096 feeds.
+Learning records only completed fetch/parse/merge results and bounded sampled
+probe outcomes. It samples the first completed outcome for a source and every
+16th retest after that. It needs at least eight effective samples before it
+changes ranking; probe evidence decays with a seven-day half-life and a
+Beta(1,1)-smoothed pass score. A learned yield below 2% enters a 24-hour
+cooldown, while one in ten refresh generations remains an exploration pass.
+Complete fetch failures use a separate exponential cooldown capped at one hour.
+The existing configured priority remains the fallback for cold sources.
+`/report` includes `source_learning_local` for this replica's
+configured/selected/skipped/exploring/measured refresh plan; it does not
+represent the entire cluster.
+
+Each endpoint is attributed to the first selected source that added it. If two
+configured sources mirror the same list, the duplicate does not become another
+independent success vote. The hash is keyed by a 32-character ID derived from
+the exact source URL and effective parser scheme. The existing source-stage
+ZSET continues to deduplicate and prioritize feeds; learning adds no separate
+per-endpoint source-owner index. Source-quality hashes expire after 30 days.
+
+Target profiles let operators periodically check a small expected response
+from an HTTP endpoint they own and are permitted to use. There are no built-in
+or third-party target profiles. Configure up to eight entries in
+`target_profiles`; each needs a unique name, an HTTP(S) URL without credentials
+or a fragment, and a nonempty expected body no longer than 64 KiB. On roughly
+one in every `target_probe_every` successful main probes (default 16), the
+monitor rotates to one profile. It first checks that origin directly, caching
+the control result for `control_probe_interval`, then uses another global
+request-budget permit for the proxy request. If the origin is unavailable, it
+records `unknown`, not a proxy failure. `target_profile=<name>` requires a
+fresh `pass` whose stored fingerprint still matches the configured URL and
+body. Profile edits or removals invalidate older results. Profile queries do
+not serve stale cached pages.
+
+To reproduce the bounded sparse-history parser benchmark locally, run:
+
+```sh
+go test ./internal/store -run '^$' -bench '^BenchmarkSummarizeReliability168SparseHours$' -benchmem
+```
+
+It measures the fixed 168-hour summary calculation only; it is not a production
+throughput estimate.
 
 ## Unified country-aware HTTP proxy
 

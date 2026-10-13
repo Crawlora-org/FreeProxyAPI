@@ -721,7 +721,8 @@
     "http@https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt",
     "http@https://raw.githubusercontent.com/z3a4/free-proxy-list/main/proxies/unchecked/http-proxies.txt",
     "socks4@https://raw.githubusercontent.com/z3a4/free-proxy-list/main/proxies/unchecked/socks4-proxies.txt",
-    "socks5@https://raw.githubusercontent.com/z3a4/free-proxy-list/main/proxies/unchecked/socks5-proxies.txt"
+    "socks5@https://raw.githubusercontent.com/z3a4/free-proxy-list/main/proxies/unchecked/socks5-proxies.txt",
+    "https://maximilianfeix.github.io/proxy-scraper/all.txt"
   ],
   "default_proxy_scheme": "http",
   "network_validation_enabled": true,

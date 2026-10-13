@@ -41,12 +41,28 @@ spec:
               value: ""
             - name: FREEPROXYAPI_EXIT_COUNTRY
               value: ""
+            - name: FREEPROXYAPI_EXIT_ASN
+              value: ""
             - name: FREEPROXYAPI_ASN
               value: ""
             - name: FREEPROXYAPI_ANONYMITY
               value: ""
+            - name: FREEPROXYAPI_TARGET_PROFILE
+              value: ""
             - name: FREEPROXYAPI_GEO_MISMATCH
               value: "false"
+            - name: FREEPROXYAPI_EXCLUDE_HOSTING
+              value: "false"
+            - name: FREEPROXYAPI_STABLE_EXIT
+              value: "false"
+            - name: FREEPROXYAPI_MIN_SUCCESS_STREAK
+              value: "0"
+            - name: FREEPROXYAPI_MIN_RELIABILITY_7D_PCT
+              value: "0"
+            - name: FREEPROXYAPI_MIN_RELIABILITY_7D_SAMPLES
+              value: "0"
+            - name: FREEPROXYAPI_EXCLUDE_TAMPERED
+              value: "true"
             - name: FREEPROXYAPI_REQUIRE_TAMPER_CHECKED
               value: "false"
             - name: FREEPROXYAPI_HTTPS
@@ -79,6 +95,14 @@ spec:
                   key: proxy-password
             - name: GOST_COUNTRIES
               value: "US"
+            - name: GOST_SESSIONS
+              value: ""
+            - name: GOST_SESSION_TTL
+              value: "10m"
+            - name: GOST_SESSION_BASE_PORT
+              value: "10000"
+            - name: GOST_SESSION_FAILOVER
+              value: "false"
             - name: GOST_REFRESH_INTERVAL
               value: "1m"
             - name: GOST_MIN_RATIO_PCT

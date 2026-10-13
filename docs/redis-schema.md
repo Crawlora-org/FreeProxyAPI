@@ -18,11 +18,76 @@ prefix. Every key below is relative to `namespace`, which defaults to
 | `<ns>:validated` | SET | Candidate IDs whose `results10` history holds at least `min_samples_for_listing` outcomes (default 3) and whose rolling `ok_ratio_pct` is at least 80. Every completion, success or failure, re-evaluates that rule, so one lucky success does not list a candidate and one transient failure does not evict a stable one. Records without a ratio fall back to their latest outcome. |
 | `<ns>:source-refresh-lock` | STRING | Short-TTL `SETNX` lease so exactly one replica refreshes inventory sources at a time; the owner renews it while active and losing it is normal. |
 | `<ns>:source-stage:<token>` | ZSET or SET | Temporary staging keys for one source refresh, holding canonical endpoint strings. The shared refresh stage is a ZSET: score is the lowest source priority seen for the endpoint (`ZADD LT`), so it is both the cross-source dedupe index and the drain order. Each feed first stages into its own private SET (one `SADD` per record); only after the feed streamed completely is that SET `SPOP`-merged into the shared ZSET in bounded batches, so a feed that fails mid-stream contributes nothing. TTL 2 hours, re-armed on every staging batch, merge batch, and drain pass; every key is deleted when its refresh or feed finishes. |
+| `<ns>:source-quality:<source-id>` | HASH | Optional bounded feed-refresh and sampled probe aggregates. `source-id` is 32 lowercase hex characters derived from the exact feed URL and its effective parser scheme. TTL is 30 days. Used only when source learning is enabled. |
+| `<ns>:source-quality:active` | SET | The current configured source-ID catalog used to bound attribution and expiry. Replaced during refresh planning and expires after 24 hours. |
+| `<ns>:source-learning-refresh` | STRING counter | Cluster-wide refresh generation used for deterministic one-in-ten exploration. Expires after 30 days. |
 | `<ns>:once:<name>` | STRING | Completion marker for a cluster-wide one-shot job; retained for the job's TTL so other replicas skip it. Permanent one-shot migrations (for example `pending-requeue-on-start-v2`) store it without expiry and persist an existing expiring marker. |
 | `<ns>:once:<name>:lock` | STRING | Token-owned lock held while a one-shot job runs. Renewed every TTL/3 by the owner; if a renewal finds another token, the job's context is cancelled and no completion marker is written. |
 | `<ns>:probe-budget:<YYYYMMDDHHMM>` | STRING counter | Global per-minute probe budget shared by every replica. Incremented and given a two-minute expiry atomically. Replicas reserve permits in chunks (`probe_permit_chunk`, default `max(10, workers/4)`) with a Lua `INCRBY` capped at `limit - used`, so the counter never exceeds the limit; permits a replica still holds when the minute ends are discarded, bounding waste to one chunk per replica per window. |
 | `<ns>:stats-leader` | STRING | Random token of the replica that holds the stats-leader lease. Taken with `SET NX PX` semantics and renewed on every stats publish (TTL `stats_leader_ttl`, default 90s); released on graceful shutdown. Only the holder scans the validated set. |
 | `<ns>:validated-aggregate` | STRING (JSON) | Identity-free validated-set aggregate written by the stats leader, only while its lease token matches: `computed_at_ms`, `by_country`, `stable_by_country`, `by_asn`, `by_anonymity`, `by_latency_band`, `stable`, `band_known`, `geo_mismatch`. TTL `stats_aggregate_ttl` (default 5m). Followers ignore it once older than two publish intervals (60s) and scan locally instead. |
+
+## Source learning and quality history
+
+Source learning is opt-in (`source_learning_enabled`, default false; see
+[configuration](configuration.md#source-learning)). When enabled, refresh
+successes/failures and sampled proxy probe outcomes update the per-source hash.
+Probe selection uses the source ID stored on the candidate hash. That
+`source_id` is assigned once when a feed first adds the endpoint and is not
+overwritten by later duplicate feed imports; it does not represent multiple
+independent source votes. The learned order reuses the existing shared
+`source-stage` ZSET rather than creating a per-endpoint source-owner index.
+
+The source hash keeps counters and timestamps such as `refresh_fetches`,
+`refresh_successes`, `fetch_failures`, `parsed`, `unique_incremental`,
+`duplicate_records`, `probe_seen`, decayed `probe_samples`/`probe_passes`, and
+the latest fetch, success, cooldown, and probe times. Stored quality expires
+after 30 days. Attribution is limited to the active source catalog; the
+`source_learning_local` field in `/report` describes this monitor's local plan,
+not a cluster-wide plan.
+
+Candidate hashes may additionally hold `success_streak`, optional exit fields,
+`target_profiles`, and `reliability_started_at_ms` plus `reliability_buckets`.
+The reliability value is a sparse comma-separated sequence of
+`utc_hour:sample_count:success_count` entries. It begins with the first
+successful sample and retains at most 168 populated UTC-hour buckets; missing
+hours add no failures. A bucket count is capped to keep the serialized value
+bounded. Query summaries use hour-aligned 24-hour and seven-day windows, so
+their edges can differ from exact rolling windows by less than one hour.
+The reported seven-day coverage start is the later of the first successful
+sample and the seven-day window start; it does not imply continuous checks.
+Legacy hashes without history return zero sample counts and omit percentage and
+success-streak fields when those measurements are unknown.
+
+When source learning is enabled, a refresh atomically writes a candidate's first
+selected `source_id` with its accepted upsert; later duplicate feeds do not
+replace it while that origin remains configured. When an origin is removed, a
+later accepted upsert may attribute the candidate to a currently active source.
+Each source-quality hash also stores a `probe_contract` fingerprint for the
+base target URL, probe mode, and expected body. Changed contracts reset sampled
+probe counters before accumulating new evidence; fetch counters and reliability
+history remain separate.
+
+Each source-quality hash contains fetch counters, incremental
+unique/duplicate counts, cooldown timestamps, and decayed probe sample/pass
+counts. The first completed outcome is sampled, then every 16th retest.
+
+Exit measurements are written only when a probe supplies an observed exit IP.
+`exit_ip_samples` counts those observations; `exit_ip_changes` counts changes
+between observed addresses, with the first observation counting as no change.
+`exit_checked_at_ms` timestamps the current exit IP and its associated ASN,
+organization, and nullable hosting hint. Empty exit observations do not update
+that timestamp. Freshness is bounded by `classification_max_age`. Hosting is a
+heuristic over ASN organization text: an unknown value is not a residential
+classification. The derived `stable_exit` result requires at least two actual
+matching observations in the last seven days and no recorded change in that
+window.
+
+`target_profiles` is a bounded JSON map on each candidate hash, with at most
+eight configured operator profiles. Results include the profile fingerprint,
+state, observation time, and optional HTTP status, latency, and error code.
+Readers match the stored fingerprint against the current URL/body definition and
+drop stale or removed profiles, so edits do not inherit earlier outcomes.
 
 ## Atomicity
 
