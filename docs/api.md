@@ -251,13 +251,50 @@ a passing fresh HTTPS/CONNECT check, and a fresh clean tamper check, with age
 bounded by `classification_max_age`. It is a point-in-time filter count, not a
 claim that the proxy will remain usable.
 
+## Operator source refresh traces
+
+`GET /report/source-refreshes` returns recent bounded source-decision traces.
+It is served on the admin listener with the other operator routes; when
+`admin_listen_addr` is configured it is absent from the public listener. When
+that listener is empty, this trace route accepts loopback connections only;
+keep ingress from forwarding operator paths. The endpoint is `no-store` and
+contains no source URLs, proxy endpoints, IP addresses, or credentials.
+
+Without `refresh_id`, it returns a bounded list of refresh summaries. `limit`
+defaults to 64 and is capped at 64. With `refresh_id=<32 lowercase hex
+characters>`, it returns the matching detailed trace. A trace links
+`refresh_id`, `generation`, `captured_at`, `started_at`, `completed_at`,
+`status` (`started`, `completed`, `failed`, or `cancelled`), and `result`.
+Per-source decisions include `selected`, `cooled`, `explored`, and
+`admission_cooled` booleans, overlapping reason codes, protection booleans for
+trusted priority and current-contract positive probes, plus bounded
+`fetch_status`/`merge_status` outcomes and timestamps. Fetch metrics are
+`fetch_attempts`,
+`http_attempts`, `network_bytes`, `fetch_duration_ms`, and `parsed`;
+`admitted_candidates` counts new candidate IDs actually accepted from that
+source during this refresh. Network bytes are response-body bytes, and fetch
+duration includes stream, parsing, and staging work rather than CPU time. They
+also include
+`admission_observation_status`
+(`not_selected`, `not_applicable`, `pending`, `recorded`, `censored`,
+`write_failed`, or `cancelled`) and `admission_observation_reasons`, which may
+include `truncated`, `candidate_cap`, `fetch_failed`, `merge_failed`,
+`cancelled`, `observation_write_failed`, `refresh_failed_before_fetch`, and
+`refresh_failed`. `admission_cooled` describes eligibility; it does not mean a
+source was actually omitted, and exploration can select a cooled source. A
+completed refresh can have a `partial` result when a selected
+source failed, was truncated or capped, or its admission observation write
+failed. Censored observations do not advance the full-pass zero-admission
+streak. Traces expire after 72 hours and at most 64 are retained. See the
+[Redis schema](redis-schema.md#source-refresh-traces).
+
 Admission refresh fields (`admission_refreshes`, `last_admitted`,
-`zero_admission_streak`, and `last_admission_at`) are updated only for a whole
-successful refresh pass and sources whose pass was not truncated or affected by
-the candidate cap. Failed, skipped, truncated, and capped sources do not add a
-zero-admission observation. `admitted` itself counts atomic new set insertions
-and may include accepted additions from a pass whose later step failed; it is
-not the same as a completed admission observation.
+`zero_admission_streak`, and `last_admission_at`) are updated only for eligible
+full-pass observations. Failed, skipped, truncated, capped, cancelled, or
+otherwise censored observations do not advance the zero-admission streak.
+`admitted` itself counts atomic new set insertions and may include accepted
+additions from a pass whose later step failed; it is not the same as a completed
+admission observation.
 
 Fetch cost fields sum HTTP client attempts, consumed HTTP response-body bytes,
 and elapsed stream work. Attempts count calls to the HTTP client; bytes exclude

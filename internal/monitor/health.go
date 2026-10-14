@@ -461,6 +461,7 @@ func startHealthServer(addr string, runner *Runner) (*healthServer, error) {
 	registerAdmin := func(m *http.ServeMux) {
 		m.HandleFunc("/report", h.report)
 		m.HandleFunc("/report/sources", h.sourceReport)
+		m.HandleFunc("/report/source-refreshes", h.sourceRefreshes)
 		m.Handle("/metrics", withAccuracyMetrics(runner.metrics.Handler(), &runner.accuracy.metrics))
 		registerInternalAPI(m, runner, loadAPIToken(runner.config.InternalAPITokenFile))
 	}
@@ -1236,4 +1237,100 @@ func (h *healthHandlers) sourceReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(report)
+}
+
+// sourceRefreshes serves bounded, opaque source-decision traces through the
+// operator routes. Keep this path on the admin listener or behind ingress
+// rules that already exclude the other /report routes.
+func (h *healthHandlers) sourceRefreshes(w http.ResponseWriter, r *http.Request) {
+	if h.runner.config.AdminListenAddr == "" && !loopbackRemoteAddr(r.RemoteAddr) {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), readyzTimeout)
+	defer cancel()
+	w.Header().Set("Cache-Control", "no-store")
+
+	if refreshID := r.URL.Query().Get("refresh_id"); refreshID != "" {
+		if !validSourceRefreshTraceID(refreshID) {
+			writeJSON(w, r, http.StatusBadRequest, map[string]string{"status": "invalid_request"})
+			return
+		}
+		payload, err := h.runner.readStore().LoadSourceRefreshTrace(ctx, refreshID)
+		if errors.Is(err, store.ErrSourceRefreshTraceNotFound) {
+			writeJSON(w, r, http.StatusNotFound, map[string]string{"status": "not_found"})
+			return
+		}
+		if err != nil {
+			writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+			return
+		}
+		trace, err := decodeSourceRefreshTrace(payload)
+		if err != nil || trace.RefreshID != refreshID {
+			writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+			return
+		}
+		writeJSON(w, r, http.StatusOK, trace)
+		return
+	}
+
+	limit := store.MaxSourceRefreshTraces
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > store.MaxSourceRefreshTraces {
+			writeJSON(w, r, http.StatusBadRequest, map[string]string{"status": "invalid_request"})
+			return
+		}
+		limit = parsed
+	}
+	ids, err := h.runner.readStore().ListSourceRefreshTraceIDs(ctx, limit)
+	if err != nil {
+		writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+		return
+	}
+	traces := make([]sourceRefreshTraceSummary, 0, len(ids))
+	for _, id := range ids {
+		payload, err := h.runner.readStore().LoadSourceRefreshTraceSummary(ctx, id)
+		if err != nil {
+			writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+			return
+		}
+		summary, err := decodeSourceRefreshTraceSummary(payload, id)
+		if err != nil {
+			writeJSON(w, r, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+			return
+		}
+		traces = append(traces, summary)
+	}
+	writeJSON(w, r, http.StatusOK, sourceRefreshTraceList{
+		RetentionSeconds: int(store.SourceRefreshTraceRetention / time.Second),
+		MaxTraces:        store.MaxSourceRefreshTraces,
+		Traces:           traces,
+	})
+}
+
+func loopbackRemoteAddr(remote string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return false
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
+}
+
+func validSourceRefreshTraceID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, char := range id {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
