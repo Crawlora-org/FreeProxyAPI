@@ -619,6 +619,8 @@ func (r *Runner) refresh(ctx context.Context) (err error) {
 		return sourceLockBusyError{}
 	}
 	refreshCtx, stopHeartbeat := r.startSourceLockHeartbeat(ctx, token)
+	r.beginSourceRefreshTrace(refreshCtx)
+	defer func() { r.finishSourceRefreshTrace(refreshCtx, ctx, err) }()
 	startedAt := time.Now()
 	defer func() {
 		// Stop renewing before changing the final lease state, so a tick that
@@ -648,6 +650,9 @@ func (r *Runner) refresh(ctx context.Context) (err error) {
 	if err != nil {
 		r.recordRefreshError()
 		return err
+	}
+	if !r.config.SourceLearningEnabled {
+		r.setLegacySourceRefreshTracePlan(refreshCtx, r.config.SourceSpecs)
 	}
 	if selected == 0 {
 		r.metrics.RecordSourceRefresh("skipped")
@@ -721,6 +726,7 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 		mergeErr      error
 	)
 	for result := range results {
+		r.recordSourceRefreshFetchResult(ctx, result)
 		if result.err != nil {
 			if result.stage == sourceStageMerge {
 				// A failed merge leaves the shared stage partially populated
@@ -786,7 +792,9 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 			if r.config.SourceLearningEnabled {
 				_, index, decodeErr := store.DecodeSourceStageScore(priority)
 				if decodeErr == nil && index >= 0 && index < len(r.config.SourceSpecs) {
-					admissionExcluded[r.sourceID(r.config.SourceSpecs[index])] = true
+					sourceID := r.sourceID(r.config.SourceSpecs[index])
+					admissionExcluded[sourceID] = true
+					r.recordSourceRefreshAdmissionCensored(sourceID, "candidate_cap")
 				}
 			}
 			totalCapped += len(batch)
@@ -802,7 +810,9 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 			if err != nil || index < 0 || index >= len(r.config.SourceSpecs) {
 				return fmt.Errorf("invalid source admission score")
 			}
-			admissions[r.sourceID(r.config.SourceSpecs[index])] += int64(counts.Added)
+			sourceID := r.sourceID(r.config.SourceSpecs[index])
+			admissions[sourceID] += int64(counts.Added)
+			r.recordSourceRefreshAdmissionDelta(sourceID, int64(counts.Added))
 		}
 		if room > 0 {
 			if room -= int64(counts.Added); room < 0 {
@@ -832,11 +842,15 @@ func (r *Runner) drainSourceRefresh(ctx context.Context, stageKey string, result
 		sort.Strings(ids)
 		for start := 0; start < len(ids); start += store.MaxSourceQualityReadBatch {
 			batch := make(map[string]int64)
-			for _, id := range ids[start:min(start+store.MaxSourceQualityReadBatch, len(ids))] {
+			batchIDs := ids[start:min(start+store.MaxSourceQualityReadBatch, len(ids))]
+			for _, id := range batchIDs {
 				batch[id] = admissions[id]
 			}
 			if err := r.store.RecordSourceAdmissionRefresh(ctx, batch, r.nowFunc()); err != nil {
 				log.Printf("source admission observation failed count=%d", len(batch))
+				r.recordSourceRefreshAdmissionRecorded(batchIDs, true)
+			} else {
+				r.recordSourceRefreshAdmissionRecorded(batchIDs, false)
 			}
 		}
 	}
@@ -941,12 +955,16 @@ func sourceQueueTime(now time.Time, priority int64) time.Time {
 }
 
 type sourceRefreshResult struct {
-	spec      SourceSpec
-	stage     string
-	parsed    int
-	rejected  int
-	err       error
-	truncated bool
+	spec            SourceSpec
+	stage           string
+	parsed          int
+	rejected        int
+	err             error
+	truncated       bool
+	fetchAttempts   int
+	httpAttempts    int64
+	networkBytes    int64
+	fetchDurationMS int64
 }
 
 const (
@@ -972,8 +990,18 @@ var errSourceRecordLimit = errors.New("source record limit reached")
 // shared ZSET with ZADD LT, touching each record once instead of staging it
 // into a set+zset pair twice and removing it from both.
 func (r *Runner) refreshSource(ctx context.Context, spec SourceSpec, stageKey string) sourceRefreshResult {
+	r.recordSourceRefreshFetchStarted(spec)
+	var httpAttempts int64
+	var networkBytes, fetchDurationMS int64
 	for attempt := 1; attempt <= sourceFetchAttempts; attempt++ {
 		result := r.refreshSourceAttempt(ctx, spec, stageKey)
+		result.fetchAttempts = attempt
+		httpAttempts += result.httpAttempts
+		result.httpAttempts = httpAttempts
+		networkBytes += result.networkBytes
+		result.networkBytes = networkBytes
+		fetchDurationMS += result.fetchDurationMS
+		result.fetchDurationMS = fetchDurationMS
 		if result.err == nil {
 			if attempt > 1 {
 				r.metrics.AddSourceFetchRecovered(1)
@@ -1049,6 +1077,9 @@ func (r *Runner) refreshSourceAttempt(ctx context.Context, spec SourceSpec, stag
 		return flush()
 	})
 	err = fetchErr
+	result.httpAttempts = fetchStats.HTTPAttempts
+	result.networkBytes = fetchStats.NetworkBytes
+	result.fetchDurationMS = fetchStats.Duration.Milliseconds()
 	result.truncated = truncated
 	if r.config.SourceLearningEnabled {
 		costCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)

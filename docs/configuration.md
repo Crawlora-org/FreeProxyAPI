@@ -29,7 +29,7 @@ operate and have approval to use. Read the
 | `sources` | none (required) | Proxy feeds, such as `file:///data/proxies.txt` or an `https://` URL. An optional `scheme@` prefix sets the default scheme for bare `host:port` lines in that feed, for example `socks5@https://example.com/socks5.txt`. |
 | `default_proxy_scheme` | `http` | Scheme for bare `host:port` records whose feed has no `scheme@` prefix. |
 | `listen_addr` | `:8080` | Public HTTP listener. |
-| `admin_listen_addr` | empty | Optional second listener, for example `127.0.0.1:9090`, for `/metrics`, `/report`, `/report/sources`, and `/internal/api/v1/proxies`. When set, those endpoints are absent from `listen_addr`. Must differ from `listen_addr`. |
+| `admin_listen_addr` | empty | Optional second listener, for example `127.0.0.1:9090`, for `/metrics`, `/report`, `/report/sources`, `/report/source-refreshes`, and `/internal/api/v1/proxies`. When set, those endpoints are absent from `listen_addr`. Must differ from `listen_addr`. |
 | `public_base_url` | empty | Public origin of your deployment, such as `https://proxies.example.com`. Used for canonical, Open Graph and code-sample URLs on the built-in pages. When empty, samples show the origin the visitor reached and canonical tags are omitted. |
 | `trusted_proxy_cidrs` | none | CIDRs of ingress that strips caller-supplied forwarding headers and writes trusted ones. Leave empty to identify clients by socket peer. |
 | `internal_api_token_file` | empty | Bearer-token file for the internal API. The API is disabled when this is empty. See [deployment.md](deployment.md#internal-query-api). |
@@ -37,11 +37,14 @@ operate and have approval to use. Read the
 | `public_max_limit` | `1000` (1–1000) | Largest page `/proxies` serves; a larger `limit` is clamped to it. An omitted `limit` is 100, or this value if smaller. Lower it to 100 to cap pages, after `freeproxyapi_public_large_page_requests_total` has stopped growing (see [deployment.md](deployment.md#lowering-the-public-page-size)). |
 
 `/metrics` exposes feed hostnames and probe settings. When `admin_listen_addr`
-is empty (the compatibility default), `/metrics`, `/report`, `/report/sources`
-and the internal API share the public listener, so your ingress must not forward
-them. The Compose example binds the admin listener to the container's loopback;
+is empty (the compatibility default), `/metrics`, `/report`, `/report/sources`,
+`/report/source-refreshes`, and the internal API share the public listener, so
+your ingress must not forward them. The Compose example binds the admin listener
+to the container's loopback;
 to scrape it, bind `0.0.0.0:9090` and publish the port only on a network you
 control.
+The source-refresh trace route also enforces loopback-only requests while
+`admin_listen_addr` is empty.
 
 ## Feed intake
 
@@ -88,7 +91,10 @@ IDs. It defaults to disabled (`0s`) and is bounded to 24 hours. The configured
 `source_learning_zero_admission_refreshes` threshold defaults to 3 and must be
 3–100. Only complete successful, uncapped and untruncated refresh passes count
 toward this guard; failed, skipped, truncated, or candidate-cap-affected passes
-are excluded. Sources at fallback priority 10 or better, sources with a positive
+are excluded, and censored observations do not advance the full-pass
+zero-admission streak. A completed refresh may report a partial result when a
+selected source fails, is truncated or capped, or its admission observation
+write fails. Sources at fallback priority 10 or better, sources with a positive
 observed probe outcome, and sources whose learned probe yield clears the
 configured minimum are protected. The one-in-ten exploration allowance remains
 in effect for cooled feeds. Any actual new candidate insertion clears that

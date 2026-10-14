@@ -336,3 +336,80 @@ func TestCorruptQualityFailsOpenForEveryLearningCooldown(t *testing.T) {
 		t.Fatalf("corrupt source did not fail open at fallback priority: %+v", plan)
 	}
 }
+
+func TestDetailedSourcePlanPreservesActualDecisionReasonsAndProtections(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	exploredID := fmt.Sprintf("%032x", 1)
+	omittedID := fmt.Sprintf("%032x", 2)
+	zeroQuality := store.SourceQuality{
+		ProbeSamples: 8, ProbePasses: 0, ProbeUpdatedAt: now,
+		CooldownUntil:      now.Add(10 * time.Minute),
+		AdmissionRefreshes: 3, ZeroAdmissionStreak: 3, LastAdmissionAt: now.Add(-time.Minute),
+	}
+	config := SourceLearningConfig{
+		Enabled: true, MinSamples: 8, LowYieldThreshold: 0.2, LowYieldCooldown: 24 * time.Hour,
+		ZeroAdmissionCooldown: time.Hour, ZeroAdmissionRefreshes: 3, ExplorationInterval: 10,
+	}
+	var generation uint64
+	for generation = 1; generation < 1000; generation++ {
+		if exploreThisRefresh(exploredID, generation, config.ExplorationInterval) && !exploreThisRefresh(omittedID, generation, config.ExplorationInterval) {
+			break
+		}
+	}
+	if generation == 1000 {
+		t.Fatal("could not find a deterministic split between exploration buckets")
+	}
+	inputs := []SourceLearningCandidate{
+		{ID: exploredID, FallbackPriority: 100, Quality: zeroQuality},
+		{ID: omittedID, FallbackPriority: 100, Quality: zeroQuality},
+		{ID: fmt.Sprintf("%032x", 3), FallbackPriority: 10, Quality: store.SourceQuality{
+			AdmissionRefreshes: 3, ZeroAdmissionStreak: 3, LastAdmissionAt: now.Add(-time.Minute),
+		}},
+		{ID: fmt.Sprintf("%032x", 4), FallbackPriority: 100, ProbeContractCurrent: true, Quality: store.SourceQuality{
+			AdmissionRefreshes: 3, ZeroAdmissionStreak: 3, LastAdmissionAt: now,
+			ProbeSamples: 1, ProbePasses: 1, ProbeSuccessfulCompletions: 1, ProbeUpdatedAt: now,
+		}},
+		{ID: fmt.Sprintf("%032x", 5), FallbackPriority: 100, Quality: store.SourceQuality{Corrupt: true, CooldownUntil: now.Add(time.Hour)}},
+	}
+	detailed := BuildSourceLearningPlanDetailed(inputs, generation, now, config)
+	legacy := BuildSourceLearningPlan(inputs, generation, now, config)
+	if len(legacy) != len(detailed.Selected) {
+		t.Fatalf("detailed planner selected %d sources; wrapper selected %d", len(detailed.Selected), len(legacy))
+	}
+	for i := range legacy {
+		if legacy[i] != detailed.Selected[i] {
+			t.Fatalf("detailed plan changed ranking at %d: %+v versus %+v", i, detailed.Selected[i], legacy[i])
+		}
+	}
+	byID := make(map[string]SourceLearningDecision, len(detailed.Decisions))
+	for _, decision := range detailed.Decisions {
+		byID[decision.ID] = decision
+	}
+	explored := byID[exploredID]
+	if !explored.Selected || !explored.Cooled || !explored.AdmissionCooled || !explored.Explored || explored.PlanPosition == nil {
+		t.Fatalf("explored cooldown decision = %+v", explored)
+	}
+	wantReasons := []string{"failure_cooldown", "low_yield_cooldown", "zero_admission_cooldown", "exploration"}
+	if fmt.Sprint(explored.Reasons) != fmt.Sprint(wantReasons) {
+		t.Fatalf("explored reasons=%v, want %v", explored.Reasons, wantReasons)
+	}
+	omitted := byID[omittedID]
+	if omitted.Selected || !omitted.Cooled || !omitted.AdmissionCooled || omitted.Explored || omitted.PlanPosition != nil {
+		t.Fatalf("omitted cooldown decision = %+v", omitted)
+	}
+	if fmt.Sprint(omitted.Reasons) != fmt.Sprint(wantReasons[:3]) {
+		t.Fatalf("omitted reasons=%v, want all overlapping cooldowns %v", omitted.Reasons, wantReasons[:3])
+	}
+	trusted := byID[inputs[2].ID]
+	if !trusted.Selected || !trusted.TrustedPriorityProtected || trusted.AdmissionCooled {
+		t.Fatalf("trusted priority source was not protected: %+v", trusted)
+	}
+	productive := byID[inputs[3].ID]
+	if !productive.Selected || !productive.CurrentPositiveProbeProtected || !productive.ProbeContractCurrent || productive.AdmissionCooled {
+		t.Fatalf("current-contract positive source was not protected: %+v", productive)
+	}
+	corrupt := byID[inputs[4].ID]
+	if !corrupt.Selected || corrupt.Cooled || corrupt.AdmissionCooled || fmt.Sprint(corrupt.Reasons) != "[quality_corrupt_fail_open]" {
+		t.Fatalf("corrupt quality did not fail open with an explicit reason: %+v", corrupt)
+	}
+}

@@ -39,9 +39,11 @@ type sourceLearningReport struct {
 	AdmissionCooled int    `json:"admission_cooled"`
 }
 type sourcePlanState struct {
-	mu     sync.RWMutex
-	feeds  map[string]plannedSource
-	report sourceLearningReport
+	mu                 sync.RWMutex
+	feeds              map[string]plannedSource
+	report             sourceLearningReport
+	trace              *sourceRefreshTrace
+	traceDecisionIndex map[string]int
 }
 
 func (r *Runner) sourceID(spec SourceSpec) string {
@@ -66,6 +68,8 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	quality := make(map[string]store.SourceQuality, len(ids))
+	probeContractCurrent := make(map[string]bool, len(ids))
+	currentContract := r.sourceProbeContract()
 	now := r.nowFunc()
 	for start := 0; start < len(ids); start += store.MaxSourceQualityReadBatch {
 		batch, err := r.store.LoadSourceQuality(ctx, ids[start:min(start+store.MaxSourceQualityReadBatch, len(ids))], now)
@@ -73,7 +77,8 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 			return 0, err
 		}
 		for id, q := range batch {
-			if q.ProbeContract != r.sourceProbeContract() {
+			probeContractCurrent[id] = q.ProbeContract == currentContract && validSourceProbeContract(currentContract)
+			if q.ProbeContract != currentContract {
 				q.ProbeSamples = 0
 				q.ProbePasses = 0
 				q.ProbeUpdatedAt = time.Time{}
@@ -89,9 +94,13 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	r.setSourceRefreshTraceGeneration(ctx, generation, now, len(ids))
 	candidates := make([]SourceLearningCandidate, 0, len(ids))
 	for _, id := range ids {
-		candidates = append(candidates, SourceLearningCandidate{ID: id, FallbackPriority: sourcePriority(r.config.SourceSpecs[indexes[id]]), Quality: quality[id]})
+		candidates = append(candidates, SourceLearningCandidate{
+			ID: id, FallbackPriority: sourcePriority(r.config.SourceSpecs[indexes[id]]),
+			Quality: quality[id], ProbeContractCurrent: probeContractCurrent[id],
+		})
 	}
 	learningConfig := SourceLearningConfig{
 		Enabled: true, MinSamples: 8, HalfLife: 7 * 24 * time.Hour,
@@ -99,11 +108,12 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 		ZeroAdmissionCooldown:  r.config.SourceLearningZeroAdmissionCooldown,
 		ZeroAdmissionRefreshes: int64(r.config.SourceLearningZeroAdmissionRefreshes),
 	}
-	plan := BuildSourceLearningPlan(candidates, generation, now, learningConfig)
+	detailedPlan := BuildSourceLearningPlanDetailed(candidates, generation, now, learningConfig)
+	plan := detailedPlan.Selected
 	feeds := make(map[string]plannedSource, len(plan))
 	report := sourceLearningReport{Enabled: true, Prepared: true, Generation: generation, Configured: len(ids), Selected: len(plan), Skipped: len(ids) - len(plan)}
-	for _, candidate := range candidates {
-		if shouldCoolZeroAdmission(candidate, now, learningConfig) {
+	for _, decision := range detailedPlan.Decisions {
+		if decision.AdmissionCooled {
 			report.AdmissionCooled++
 		}
 	}
@@ -124,6 +134,7 @@ func (r *Runner) prepareSourceLearning(ctx context.Context) (int, error) {
 	r.sourcePlan.mu.Lock()
 	r.sourcePlan.feeds, r.sourcePlan.report = feeds, report
 	r.sourcePlan.mu.Unlock()
+	r.setSourceRefreshTracePlan(ctx, generation, now, len(ids), detailedPlan.Decisions)
 	return len(plan), nil
 }
 

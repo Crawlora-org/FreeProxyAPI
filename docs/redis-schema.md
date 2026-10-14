@@ -17,6 +17,9 @@ prefix. Every key below is relative to `namespace`, which defaults to
 | `<ns>:leased` | ZSET | Candidates currently leased across all replicas. Score is lease-expiry epoch milliseconds. |
 | `<ns>:validated` | SET | Candidate IDs whose `results10` history holds at least `min_samples_for_listing` outcomes (default 3) and whose rolling `ok_ratio_pct` is at least 80. Every completion, success or failure, re-evaluates that rule, so one lucky success does not list a candidate and one transient failure does not evict a stable one. Records without a ratio fall back to their latest outcome. |
 | `<ns>:source-refresh-lock` | STRING | Short-TTL `SETNX` lease so exactly one replica refreshes inventory sources at a time; the owner renews it while active and losing it is normal. |
+| `<ns>:source-refresh-trace:<refresh-id>` | STRING (gzip-compressed JSON) | Bounded detail trace for one source refresh, keyed by a 32-character lowercase hexadecimal opaque refresh ID. Includes refresh/generation timestamps, status/result, and bounded per-source decisions; TTL 72 hours. At most 64 traces are retained. |
+| `<ns>:source-refresh-trace-summary:<refresh-id>` | STRING (JSON) | Compact summary used by the bounded trace-list view. Retained and evicted with its detail trace; TTL 72 hours. |
+| `<ns>:source-refresh-traces` | ZSET | Bounded index of retained refresh trace IDs, ordered by capture time and trimmed to at most 64 entries. Trace storage is telemetry and fails open if Redis trace writes fail. |
 | `<ns>:source-stage:<token>` | ZSET or SET | Temporary staging keys for one source refresh, holding canonical endpoint strings. The shared refresh stage is a ZSET: score is the lowest source priority seen for the endpoint (`ZADD LT`), so it is both the cross-source dedupe index and the drain order. Each feed first stages into its own private SET (one `SADD` per record); only after the feed streamed completely is that SET `SPOP`-merged into the shared ZSET in bounded batches, so a feed that fails mid-stream contributes nothing. TTL 2 hours, re-armed on every staging batch, merge batch, and drain pass; every key is deleted when its refresh or feed finishes. |
 | `<ns>:source-quality:<source-id>` | HASH | Optional bounded feed-refresh and sampled probe aggregates. `source-id` is 32 lowercase hex characters derived from the exact feed URL and its effective parser scheme. TTL is 30 days. Used only when source learning is enabled. |
 | `<ns>:source-quality:active` | SET | The current configured source-ID catalog used to bound attribution and expiry. Replaced during refresh planning and expires after 24 hours. |
@@ -26,6 +29,27 @@ prefix. Every key below is relative to `namespace`, which defaults to
 | `<ns>:probe-budget:<YYYYMMDDHHMM>` | STRING counter | Global per-minute probe budget shared by every replica. Incremented and given a two-minute expiry atomically. Replicas reserve permits in chunks (`probe_permit_chunk`, default `max(10, workers/4)`) with a Lua `INCRBY` capped at `limit - used`, so the counter never exceeds the limit; permits a replica still holds when the minute ends are discarded, bounding waste to one chunk per replica per window. |
 | `<ns>:stats-leader` | STRING | Random token of the replica that holds the stats-leader lease. Taken with `SET NX PX` semantics and renewed on every stats publish (TTL `stats_leader_ttl`, default 90s); released on graceful shutdown. Only the holder scans the validated set. |
 | `<ns>:validated-aggregate` | STRING (JSON) | Validated-set aggregate written by the stats leader, only while its lease token matches: `computed_at_ms`, `by_country`, `stable_by_country`, `by_asn`, `by_anonymity`, `by_latency_band`, `stable`, `band_known`, `geo_mismatch`, and (when source learning is active) `by_source`, `routing_by_source`, `source_counts_observed`, `unattributed_validated`, and `unattributed_routing`. Source maps contain counts only, keyed by source ID. TTL `stats_aggregate_ttl` (default 5m). Followers ignore it once older than two publish intervals (60s) and scan locally instead. |
+
+## Source refresh traces
+
+Source refresh decision traces back the admin-only `GET /report/source-refreshes`
+endpoint (see [API reference](api.md#operator-source-refresh-traces)). Each
+trace links its opaque `refresh_id`, generation, capture/start/completion times,
+status, result, and per-source selection, cooldown, exploration, admission
+cooldown, protection, reason-code, fetch-status, and attempt-count fields.
+Per-source admission fields include `admission_observation_status`
+(`not_selected`, `not_applicable`, `pending`, `recorded`, `censored`,
+`write_failed`, or `cancelled`) and `admission_observation_reasons` (which may
+contain `truncated`, `candidate_cap`, `fetch_failed`, `merge_failed`,
+`cancelled`, `observation_write_failed`, `refresh_failed_before_fetch`, or
+`refresh_failed`).
+Reason codes may overlap. Admission cooldown records eligibility rather than
+actual omission, and an exploration decision may select a cooled source. Trace
+keys and their Redis index are TTL-backed and bounded to 64 retained records;
+trace telemetry is fail-open and does not determine refresh behavior. A refresh
+can complete with a partial result if a selected source failed, was truncated
+or capped, or its admission observation write failed. Censored observations do
+not advance the full-pass zero-admission streak.
 
 ## Source learning and quality history
 

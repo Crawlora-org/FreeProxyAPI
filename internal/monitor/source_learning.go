@@ -31,6 +31,9 @@ type SourceLearningCandidate struct {
 	ID               string
 	FallbackPriority int64
 	Quality          store.SourceQuality
+	// ProbeContractCurrent is set by the refresh snapshot loader after it
+	// invalidates probe observations recorded under an older contract.
+	ProbeContractCurrent bool
 }
 
 // RankedSource is one entry selected for the next source refresh. Priority is
@@ -46,12 +49,36 @@ type RankedSource struct {
 	AdmissionCooled bool
 }
 
+// SourceLearningDecision records the planner's actual decision for one source.
+// Reasons retain overlapping cooldowns; an explored source can therefore be
+// selected while still reporting each cooldown that exploration bypassed.
+type SourceLearningDecision struct {
+	ID                            string
+	Selected                      bool
+	Cooled                        bool
+	Explored                      bool
+	AdmissionCooled               bool
+	TrustedPriorityProtected      bool
+	CurrentPositiveProbeProtected bool
+	ProbeContractCurrent          bool
+	PlanPosition                  *int
+	Reasons                       []string
+}
+
+// DetailedSourceLearningPlan pairs the sources the refresh will actually
+// fetch with a decision record for every unique configured source identity.
+type DetailedSourceLearningPlan struct {
+	Selected  []RankedSource
+	Decisions []SourceLearningDecision
+}
+
 type scoredSource struct {
 	candidate       SourceLearningCandidate
 	score           float64
 	learned         bool
 	cooled          bool
 	admissionCooled bool
+	cooldownReasons []string
 }
 
 // StableSourceID shares store's URL-plus-scheme identity so the refresh planner
@@ -77,8 +104,15 @@ func SourceYield(q store.SourceQuality, now time.Time, config SourceLearningConf
 // one-in-N exploration refresh, so a bad early estimate cannot suppress a feed
 // forever. With learning disabled, fallback priorities are returned unchanged.
 func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber uint64, now time.Time, config SourceLearningConfig) []RankedSource {
+	return BuildSourceLearningPlanDetailed(candidates, refreshNumber, now, config).Selected
+}
+
+// BuildSourceLearningPlanDetailed is the source planner used by refreshes and
+// trace reporting. It returns the same ranked plan as BuildSourceLearningPlan
+// plus one exact, reason-preserving decision for every unique candidate.
+func BuildSourceLearningPlanDetailed(candidates []SourceLearningCandidate, refreshNumber uint64, now time.Time, config SourceLearningConfig) DetailedSourceLearningPlan {
 	if len(candidates) == 0 {
-		return nil
+		return DetailedSourceLearningPlan{}
 	}
 	minimum, halfLife := config.normalized()
 	seen := make(map[string]struct{}, len(candidates))
@@ -96,20 +130,11 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 			score, samples = 0.5, 0
 		}
 		eligible := config.Enabled && !candidate.Quality.Corrupt && samples >= minimum
-		cooled := false
-		admissionCooled := false
-		if config.Enabled && !candidate.Quality.Corrupt {
-			cooled = candidate.Quality.CooldownUntil.After(now)
-			if eligible && config.LowYieldThreshold > 0 && score < config.LowYieldThreshold && config.LowYieldCooldown > 0 {
-				lowYieldUntil := candidate.Quality.ProbeUpdatedAt.Add(config.LowYieldCooldown)
-				cooled = cooled || lowYieldUntil.After(now)
-			}
-			admissionCooled = shouldCoolZeroAdmission(candidate, now, config)
-			cooled = cooled || admissionCooled
-		}
+		cooldownReasons := sourceCooldownReasons(candidate, now, config, eligible, score)
+		admissionCooled := shouldCoolZeroAdmission(candidate, now, config)
 		scored = append(scored, scoredSource{
-			candidate: candidate, score: score, learned: eligible, cooled: cooled,
-			admissionCooled: admissionCooled,
+			candidate: candidate, score: score, learned: eligible, cooled: len(cooldownReasons) > 0,
+			admissionCooled: admissionCooled, cooldownReasons: cooldownReasons,
 		})
 	}
 	if !config.Enabled {
@@ -120,10 +145,13 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 			return false // stable sort preserves configured source order on ties
 		})
 		plan := make([]RankedSource, 0, len(scored))
+		decisions := make([]SourceLearningDecision, 0, len(scored))
 		for _, item := range scored {
 			plan = append(plan, RankedSource{ID: item.candidate.ID, Priority: item.candidate.FallbackPriority})
+			position := len(plan) - 1
+			decisions = append(decisions, sourceLearningDecision(item, true, false, &position, []string{"learning_disabled"}))
 		}
-		return plan
+		return DetailedSourceLearningPlan{Selected: plan, Decisions: decisions}
 	}
 
 	interval := config.ExplorationInterval
@@ -174,11 +202,14 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 		exploring = exploring[:maxExploration]
 	}
 	plan := make([]RankedSource, 0, len(active)+len(exploring))
+	selectedByID := make(map[string]RankedSource, len(active)+len(exploring))
 	appendSource := func(item scoredSource, isExploration bool) {
-		plan = append(plan, RankedSource{
+		ranked := RankedSource{
 			ID: item.candidate.ID, Priority: int64(len(plan)), Score: item.score,
 			Learned: item.learned, Exploration: isExploration, AdmissionCooled: item.admissionCooled,
-		})
+		}
+		plan = append(plan, ranked)
+		selectedByID[item.candidate.ID] = ranked
 	}
 	exploreIndex := 0
 	for i, item := range active {
@@ -191,7 +222,63 @@ func BuildSourceLearningPlan(candidates []SourceLearningCandidate, refreshNumber
 	for ; exploreIndex < len(exploring); exploreIndex++ {
 		appendSource(exploring[exploreIndex], true)
 	}
-	return plan
+	decisions := make([]SourceLearningDecision, 0, len(scored))
+	for _, item := range scored {
+		ranked, selected := selectedByID[item.candidate.ID]
+		var position *int
+		if selected {
+			value := int(ranked.Priority)
+			position = &value
+		}
+		reasons := append([]string(nil), item.cooldownReasons...)
+		if ranked.Exploration {
+			reasons = append(reasons, "exploration")
+		}
+		if len(item.cooldownReasons) == 0 {
+			if item.candidate.Quality.Corrupt {
+				reasons = append(reasons, "quality_corrupt_fail_open")
+			} else {
+				reasons = append(reasons, "active")
+			}
+		}
+		decisions = append(decisions, sourceLearningDecision(item, selected, ranked.Exploration, position, reasons))
+	}
+	return DetailedSourceLearningPlan{Selected: plan, Decisions: decisions}
+}
+
+func sourceLearningDecision(item scoredSource, selected, explored bool, position *int, reasons []string) SourceLearningDecision {
+	quality := item.candidate.Quality
+	return SourceLearningDecision{
+		ID:                            item.candidate.ID,
+		Selected:                      selected,
+		Cooled:                        item.cooled,
+		Explored:                      explored,
+		AdmissionCooled:               item.admissionCooled,
+		TrustedPriorityProtected:      item.candidate.FallbackPriority <= 10,
+		CurrentPositiveProbeProtected: item.candidate.ProbeContractCurrent && (quality.ProbePasses > 0 || quality.ProbeSuccessfulCompletions > 0),
+		ProbeContractCurrent:          item.candidate.ProbeContractCurrent,
+		PlanPosition:                  position,
+		Reasons:                       reasons,
+	}
+}
+
+func sourceCooldownReasons(candidate SourceLearningCandidate, now time.Time, config SourceLearningConfig, eligible bool, score float64) []string {
+	if !config.Enabled || candidate.Quality.Corrupt {
+		return nil
+	}
+	var reasons []string
+	if candidate.Quality.CooldownUntil.After(now) {
+		reasons = append(reasons, "failure_cooldown")
+	}
+	if eligible && config.LowYieldThreshold > 0 && score < config.LowYieldThreshold && config.LowYieldCooldown > 0 {
+		if candidate.Quality.ProbeUpdatedAt.Add(config.LowYieldCooldown).After(now) {
+			reasons = append(reasons, "low_yield_cooldown")
+		}
+	}
+	if shouldCoolZeroAdmission(candidate, now, config) {
+		reasons = append(reasons, "zero_admission_cooldown")
+	}
+	return reasons
 }
 
 func shouldCoolZeroAdmission(candidate SourceLearningCandidate, now time.Time, config SourceLearningConfig) bool {

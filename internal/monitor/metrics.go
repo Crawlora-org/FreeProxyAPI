@@ -67,32 +67,33 @@ type targetProbeMetrics struct {
 // outcomes, and global-budget denials. Target-labeled probe metrics expose only
 // the configured scheme, host, and path (never query strings or credentials).
 type Metrics struct {
-	sourceRefreshTotal      [4]atomic.Int64 // ok, error, skipped, canceled
-	sourceFailures          sourceFailureMetrics
-	sourceRecordsAdded      atomic.Int64
-	sourceRecordsReject     atomic.Int64
-	sourcesTruncated        atomic.Int64
-	candidatesCapped        atomic.Int64
-	sourceFetchFailures     atomic.Int64
-	sourceFetchRetries      atomic.Int64
-	sourceFetchRecovered    atomic.Int64
-	claimsTotal             atomic.Int64
-	claimBatches            atomic.Int64
-	claimEmpty              atomic.Int64
-	reclaimsTotal           atomic.Int64
-	probeResultsTotal       [2]atomic.Int64
-	probeUploadBytes        atomic.Int64
-	probeDownloadBytes      atomic.Int64
-	budgetDenialsTotal      atomic.Int64
-	resultConflictsTotal    atomic.Int64
-	evictionsTotal          atomic.Int64
-	discardedTotal          atomic.Int64
-	sourceTombstoned        atomic.Int64
-	internalAPIFailures     atomic.Int64
-	publicQueryFailures     atomic.Int64
-	publicStaleResponses    atomic.Int64
-	publicLargePageRequests atomic.Int64
-	publicRefreshFailures   atomic.Int64
+	sourceRefreshTotal              [4]atomic.Int64 // ok, error, skipped, canceled
+	sourceRefreshTraceWriteFailures atomic.Int64
+	sourceFailures                  sourceFailureMetrics
+	sourceRecordsAdded              atomic.Int64
+	sourceRecordsReject             atomic.Int64
+	sourcesTruncated                atomic.Int64
+	candidatesCapped                atomic.Int64
+	sourceFetchFailures             atomic.Int64
+	sourceFetchRetries              atomic.Int64
+	sourceFetchRecovered            atomic.Int64
+	claimsTotal                     atomic.Int64
+	claimBatches                    atomic.Int64
+	claimEmpty                      atomic.Int64
+	reclaimsTotal                   atomic.Int64
+	probeResultsTotal               [2]atomic.Int64
+	probeUploadBytes                atomic.Int64
+	probeDownloadBytes              atomic.Int64
+	budgetDenialsTotal              atomic.Int64
+	resultConflictsTotal            atomic.Int64
+	evictionsTotal                  atomic.Int64
+	discardedTotal                  atomic.Int64
+	sourceTombstoned                atomic.Int64
+	internalAPIFailures             atomic.Int64
+	publicQueryFailures             atomic.Int64
+	publicStaleResponses            atomic.Int64
+	publicLargePageRequests         atomic.Int64
+	publicRefreshFailures           atomic.Int64
 
 	candidatesGauge       atomic.Int64
 	sourceUniqueGauge     atomic.Int64
@@ -236,6 +237,10 @@ func (m *Metrics) RecordSourceRefresh(result string) {
 		index = 3
 	}
 	m.sourceRefreshTotal[index].Add(1)
+}
+
+func (m *Metrics) AddSourceRefreshTraceWriteFailure() {
+	m.sourceRefreshTraceWriteFailures.Add(1)
 }
 
 func (m *Metrics) AddSourceRecords(added, rejected int64) {
@@ -520,6 +525,7 @@ func (m *Metrics) Handler() http.Handler {
 			{`freeproxyapi_source_refreshes_total{result="error"}`, "", "", m.sourceRefreshTotal[1].Load},
 			{`freeproxyapi_source_refreshes_total{result="skipped"}`, "", "", m.sourceRefreshTotal[2].Load},
 			{`freeproxyapi_source_refreshes_total{result="canceled"}`, "", "", m.sourceRefreshTotal[3].Load},
+			{"freeproxyapi_source_refresh_trace_write_failures_total", "Source-refresh decision trace writes that failed open without interrupting refresh work.", "counter", m.sourceRefreshTraceWriteFailures.Load},
 			{"freeproxyapi_source_records_added_total", "Inventory records accepted into the candidate set.", "counter", m.sourceRecordsAdded.Load},
 			{"freeproxyapi_source_records_rejected_total", "Inventory records rejected at parse time.", "counter", m.sourceRecordsReject.Load},
 			{"freeproxyapi_sources_truncated_total", "Feeds cut off at max_records_per_source during a refresh.", "counter", m.sourcesTruncated.Load},
