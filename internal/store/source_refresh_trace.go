@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -139,7 +140,9 @@ func (s *Redis) ListSourceRefreshTraceIDs(ctx context.Context, limit int) ([]str
 	}
 	// Read at most the index's configured bound even if external corruption has
 	// inserted arbitrary members, then expose only validated source IDs.
-	ids, err := s.client.ZRevRange(ctx, s.sourceRefreshTraceIndexKey(), 0, MaxSourceRefreshTraces-1).Result()
+	ids, err := s.client.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key: s.sourceRefreshTraceIndexKey(), Start: "0", Stop: strconv.Itoa(MaxSourceRefreshTraces - 1), Rev: true,
+	}).Result()
 	if err != nil {
 		return nil, fmt.Errorf("list source refresh trace IDs: %w", err)
 	}
