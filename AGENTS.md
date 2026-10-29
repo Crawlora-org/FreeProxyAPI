@@ -4,7 +4,7 @@ Rules for anyone, human or automated, changing this repository.
 
 ## Build and test
 
-- Go 1.27.2 or newer (see `go.mod`).
+- Go 1.27.3 or newer (see `go.mod`).
 - `make check` runs `gofmt` verification, `go vet`, `go test ./...` and
   `go test -race ./...`. CI also runs `staticcheck` and `govulncheck`.
 - Tests are hermetic: they use an in-memory Redis and synthetic GeoIP data and

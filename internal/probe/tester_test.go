@@ -117,6 +117,9 @@ func TestRunProbeEchoThroughHTTPProxy(t *testing.T) {
 	requests := 0
 	var seenNonce string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The transport writes request bytes asynchronously. Keep the response
+		// behind that write so the traffic counter has a deterministic snapshot.
+		time.Sleep(10 * time.Millisecond)
 		requests++
 		seenNonce = r.URL.Query().Get(EchoNonceParam)
 		w.Header().Set("Content-Type", "application/json")
