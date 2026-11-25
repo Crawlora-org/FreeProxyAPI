@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/freeproxyapi ./cmd/freeproxyapi \
     && CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/proxy-router ./cmd/proxy-router
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 LABEL org.opencontainers.image.source="https://github.com/Crawlora-org/FreeProxyAPI" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.description="Collects public proxy lists, validates them, and serves the results over HTTP."
